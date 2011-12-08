@@ -2271,6 +2271,7 @@
                :format-arguments (list namestring original (strerror err))))))
 
 (defun open (filename
+             &rest args
              &key
              (direction :input)
              (element-type 'base-char)
@@ -2447,8 +2448,16 @@
                       (open-error "~@<The path ~2I~_~S ~I~_does not exist.~:>"
                                   pathname))
                      (t nil)))
-                  ((and (eql errno sb!unix:eexist) (null if-exists))
-                   nil)
+                  ((eql errno sb!unix:eexist)
+                   (if (null if-exists)
+                       nil
+                       (restart-case (vanilla-open-error)
+                         (rename ()
+                           :report "Rename it."
+                           (apply #'open filename :if-exists :rename args))
+                         (supersede ()
+                           :report "Supersede it."
+                           (apply #'open filename :if-exists :supersede args)))))
                   (t
                    (vanilla-open-error)))))))))
 
