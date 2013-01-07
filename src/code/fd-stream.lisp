@@ -1341,8 +1341,8 @@
 (defun bytes-for-char-fun (ef-entry)
   (if ef-entry (ef-bytes-for-char-fun ef-entry) (constantly 1)))
 
-(defmacro define-unibyte-mapping-external-format
-    (canonical-name (&rest other-names) &body exceptions)
+(defmacro define-external-format/unibyte-mapping
+    ((canonical-name &rest other-names) &body exceptions)
   (let ((->code-name (symbolicate canonical-name '->code-mapper))
         (code->-name (symbolicate 'code-> canonical-name '-mapper))
         (get-bytes-name (symbolicate 'get- canonical-name '-bytes))
@@ -1382,43 +1382,58 @@
                 (,(make-od-name 'latin->string accessor)
                   array astart aend #',',->code-name)))))
        (instantiate-octets-definition ,define-string-name)
-       (define-unibyte-external-format ,canonical-name ,other-names
+       (define-external-format/unibyte (,canonical-name ,@other-names)
+         :out-form
          (let ((octet (,code->-name bits)))
            (if octet
                (setf (sap-ref-8 sap tail) octet)
                (external-format-encoding-error stream bits)))
+         :in-form
          (let ((code (,->code-name byte)))
            (if code
                (code-char code)
                (return-from decode-break-reason 1)))
-         ,->string-aref-name
-         ,string->-name))))
+         :octets-to-string-symbol ,->string-aref-name
+         :string-to-octets-symbol ,string->-name))))
 
-(defmacro define-unibyte-external-format
-    (canonical-name (&rest other-names)
-     out-form in-form octets-to-string-symbol string-to-octets-symbol)
+(defmacro define-external-format/unibyte
+    ((canonical-name &rest other-names)
+     &key
+     (out-form (missing-arg))
+     (in-form (missing-arg))
+     (octets-to-string-symbol (missing-arg))
+     (string-to-octets-symbol (missing-arg)))
   `(define-external-format/variable-width (,canonical-name ,@other-names)
-     t #\? 1
-     ,out-form
-     1
-     ,in-form
-     ,octets-to-string-symbol
-     ,string-to-octets-symbol))
+     :output-restart          t
+     :replacement-character   #\?
+     :out-size-expr           1
+     :out-expr                ,out-form
+     :in-size-expr            1
+     :in-expr                 ,in-form
+     :octets-to-string-symbol ,octets-to-string-symbol
+     :string-to-octets-symbol ,string-to-octets-symbol))
 
 (defmacro define-external-format/variable-width
-    (external-format output-restart replacement-character
-     out-size-expr out-expr in-size-expr in-expr
-     octets-to-string-sym string-to-octets-sym
-     &key base-string-direct-mapping)
-  (let* ((name (first external-format))
-         (out-function (symbolicate "OUTPUT-BYTES/" name))
-         (format (format nil "OUTPUT-CHAR-~A-~~A-BUFFERED" (string name)))
-         (in-function (symbolicate "FD-STREAM-READ-N-CHARACTERS/" name))
-         (in-char-function (symbolicate "INPUT-CHAR/" name))
-         (resync-function (symbolicate "RESYNC/" name))
-         (size-function (symbolicate "BYTES-FOR-CHAR/" name))
-         (read-c-string-function (symbolicate "READ-FROM-C-STRING/" name))
-         (output-c-string-function (symbolicate "OUTPUT-TO-C-STRING/" name))
+    ((&whole names canonical-name &rest other-names)
+     &key
+     (output-restart (missing-arg))
+     (replacement-character (missing-arg))
+     (out-size-expr (missing-arg))
+     (out-expr (missing-arg))
+     (in-size-expr (missing-arg))
+     (in-expr (missing-arg))
+     (octets-to-string-symbol (missing-arg))
+     (string-to-octets-symbol (missing-arg))
+     base-string-direct-mapping)
+  (declare (ignore other-names))
+  (let* ((out-function (symbolicate "OUTPUT-BYTES/" canonical-name))
+         (format (format nil "OUTPUT-CHAR-~A-~~A-BUFFERED" (string canonical-name)))
+         (in-function (symbolicate "FD-STREAM-READ-N-CHARACTERS/" canonical-name))
+         (in-char-function (symbolicate "INPUT-CHAR/" canonical-name))
+         (resync-function (symbolicate "RESYNC/" canonical-name))
+         (size-function (symbolicate "BYTES-FOR-CHAR/" canonical-name))
+         (read-c-string-function (symbolicate "READ-FROM-C-STRING/" canonical-name))
+         (output-c-string-function (symbolicate "OUTPUT-TO-C-STRING/" canonical-name))
          (n-buffer (gensym "BUFFER")))
     `(progn
       (defun ,size-function (byte)
@@ -1468,7 +1483,7 @@
       (def-output-routines/variable-width (,format
                                            ,out-size-expr
                                            ,output-restart
-                                           ,external-format
+                                           ,names
                                            (:none character)
                                            (:line character)
                                            (:full character))
@@ -1559,7 +1574,7 @@
                   ;; through into another pass of the loop.
                   ))))
       (def-input-routine/variable-width ,in-char-function (character
-                                                           ,external-format
+                                                           ,names
                                                            ,in-size-expr
                                                            sap head)
         (let ((byte (sap-ref-8 sap head)))
@@ -1588,7 +1603,7 @@
         (declare (type system-area-pointer sap))
         (locally
             (declare (optimize (speed 3) (safety 0)))
-          (let* ((stream ,name)
+          (let* ((stream ,canonical-name)
                  (size 0) (head 0) (byte 0) (char nil)
                  (decode-break-reason nil)
                  (length (dotimes (count (1- sb-xc:array-dimension-limit) count)
@@ -1603,7 +1618,7 @@
                                    nil))
                            (when decode-break-reason
                              (c-string-decoding-error
-                              ,name sap head decode-break-reason))
+                              ,canonical-name sap head decode-break-reason))
                            (when (zerop (char-code char))
                              (return count))))
                  (string (case element-type
@@ -1631,7 +1646,7 @@
                       nil))
               (when decode-break-reason
                 (c-string-decoding-error
-                 ,name sap head decode-break-reason))
+                 ,canonical-name sap head decode-break-reason))
               (setf (aref string index) char)))))
 
       (defun ,output-c-string-function (string)
@@ -1679,7 +1694,7 @@
                      ,n-buffer))))))
 
       (let ((entry (%make-external-format
-                    :names ',external-format
+                    :names ',names
                     :default-replacement-character ,replacement-character
                     :read-n-chars-fun #',in-function
                     :read-char-fun #',in-char-function
@@ -1694,11 +1709,11 @@
                     :write-c-string-fun #',output-c-string-function
                     :octets-to-string-fun (lambda (&rest rest)
                                             (declare (dynamic-extent rest))
-                                            (apply ',octets-to-string-sym rest))
+                                            (apply ',octets-to-string-symbol rest))
                     :string-to-octets-fun (lambda (&rest rest)
                                             (declare (dynamic-extent rest))
-                                            (apply ',string-to-octets-sym rest)))))
-        (dolist (ef ',external-format)
+                                            (apply ',string-to-octets-symbol rest)))))
+        (dolist (ef ',names)
           (setf (gethash ef *external-formats*) entry))))))
 
 ;;;; utility functions (misc routines, etc)

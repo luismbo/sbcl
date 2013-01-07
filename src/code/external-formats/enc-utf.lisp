@@ -255,10 +255,14 @@
 
 (instantiate-octets-definition define-utf-16->string)
 
-(define-external-format/variable-width (:utf-16le :utf16le) t
+(define-external-format/variable-width (:utf-16le :utf16le)
+  :output-restart t
+  :replacement-character
   (code-char #xfffd)
+  :out-size-expr
   (let ((bits (char-code byte)))
     (if (< bits #x10000) 2 4))
+  :out-expr
   (cond
     ((< bits #x10000)
      (if (utf-noncharacter-code-p bits)
@@ -271,7 +275,9 @@
                   (low (ldb (byte 10 0) new-bits)))
              (setf (sap-ref-16le sap tail) (dpb high (byte 10 0) #xd800))
              (setf (sap-ref-16le sap (+ tail 2)) (dpb low (byte 10 0) #xdc00))))))
+  :in-size-expr
   (2 (if (<= #xd800 (sap-ref-16le sap head) #xdbff) 4 2))
+  :in-expr
   (let ((bits (sap-ref-16le sap head)))
     (cond
       ((or (<= #xdc00 bits #xdfff)
@@ -287,13 +293,17 @@
                (return-from decode-break-reason 4)
                (code-char (+ #x10000 code))))))
       (t (code-char bits))))
-  utf-16le->string-aref
-  string->utf-16le)
+  :octets-to-string-symbol utf-16le->string-aref
+  :string-to-octets-symbol string->utf-16le)
 
-(define-external-format/variable-width (:utf-16be :utf16be) t
+(define-external-format/variable-width (:utf-16be :utf16be)
+  :output-restart t
+  :replacement-character
   (code-char #xfffd)
+  :out-size-expr
   (let ((bits (char-code byte)))
     (if (< bits #x10000) 2 4))
+  :out-expr
   (cond
     ((< bits #x10000)
      (if (utf-noncharacter-code-p bits)
@@ -306,7 +316,9 @@
                   (low (ldb (byte 10 0) new-bits)))
              (setf (sap-ref-16be sap tail) (dpb high (byte 10 0) #xd800))
              (setf (sap-ref-16be sap (+ tail 2)) (dpb low (byte 10 0) #xdc00))))))
+  :in-size-expr
   (2 (if (<= #xd800 (sap-ref-16be sap head) #xdbff) 4 2))
+  :in-expr
   (let ((bits (sap-ref-16be sap head)))
     (cond
       ((or (<= #xdc00 bits #xdfff)
@@ -322,8 +334,9 @@
                (return-from decode-break-reason 4)
                (code-char (+ #x10000 code))))))
       (t (code-char bits))))
-  utf-16be->string-aref
-  string->utf-16be)
+  :octets-to-string-symbol utf-16be->string-aref
+  :string-to-octets-symbol string->utf-16be)
+
 
 (declaim (inline char->utf-32le))
 (defun char->utf-32le (char dest string pos)
@@ -495,32 +508,38 @@
 
 (instantiate-octets-definition define-utf-32->string)
 
-(define-external-format/variable-width (:utf-32le :utf32le) t
-  (code-char #xfffd)
-  4
+(define-external-format/variable-width (:utf-32le :utf32le)
+  :output-restart t
+  :replacement-character (code-char #xfffd)
+  :out-size-expr 4
+  :out-expr
   (if (utf-noncharacter-code-p bits)
       (external-format-encoding-error stream bits)
       (setf (sap-ref-32le sap tail) bits))
-  4
+  :in-size-expr 4
+  :in-expr
   (let ((code (sap-ref-32le sap head)))
     (if (and (< code char-code-limit)
              (not (utf-noncharacter-code-p code)))
         (code-char code)
         (return-from decode-break-reason 4)))
-  utf-32le->string-aref
-  string->utf-32le)
+  :octets-to-string-symbol utf-32le->string-aref
+  :string-to-octets-symbol string->utf-32le)
 
-(define-external-format/variable-width (:utf-32be :utf32be) t
-  (code-char #xfffd)
-  4
+(define-external-format/variable-width (:utf-32be :utf32be)
+  :output-restart t
+  :replacement-character (code-char #xfffd)
+  :out-size-expr 4
+  :out-expr
   (if (utf-noncharacter-code-p bits)
       (external-format-encoding-error stream bits)
       (setf (sap-ref-32be sap tail) bits))
-  4
+  :in-size-expr 4
+  :in-expr
   (let ((code (sap-ref-32be sap head)))
     (if (and (< code char-code-limit)
              (not (utf-noncharacter-code-p code)))
         (code-char code)
         (return-from decode-break-reason 4)))
-  utf-32be->string-aref
-  string->utf-32be)
+  :octets-to-string-symbol utf-32be->string-aref
+  :string-to-octets-symbol string->utf-32be)

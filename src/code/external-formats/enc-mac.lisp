@@ -1,7 +1,7 @@
 (in-package "SB-IMPL")
 
-(define-unibyte-mapping-external-format :mac-roman
-    (:|mac-roman| :|MacRoman| :mac :|mac| :macintosh :|macintosh|)
+(define-external-format/unibyte-mapping
+    (:mac-roman :|mac-roman| :|MacRoman| :mac :|mac| :macintosh :|macintosh|)
   (#x80 #x00C4) ; LATIN CAPITAL LETTER A WITH DIAERESIS
   (#x81 #x00C5) ; LATIN CAPITAL LETTER A WITH RING ABOVE
   (#x82 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA

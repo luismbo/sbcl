@@ -235,27 +235,31 @@
 
 (instantiate-octets-definition define-ucs-2->string)
 
-(define-external-format/variable-width (:ucs-2le :ucs2le #+win32 :ucs2 #+win32 :ucs-2) t
-  (code-char #xfffd)
-  2
+(define-external-format/variable-width (:ucs-2le :ucs2le #+win32 :ucs2 #+win32 :ucs-2)
+  :output-restart t
+  :replacement-character (code-char #xfffd)
+  :out-size-expr 2
+  :out-expr
   (if (< bits #x10000)
       (setf (sap-ref-16le sap tail) bits)
       (external-format-encoding-error stream bits))
-  2
-  (code-char (sap-ref-16le sap head))
-  ucs-2le->string-aref
-  string->ucs-2le)
+  :in-size-expr 2
+  :in-expr (code-char (sap-ref-16le sap head))
+  :octets-to-string-symbol ucs-2le->string-aref
+  :string-to-octets-symbol string->ucs-2le)
 
-(define-external-format/variable-width (:ucs-2be :ucs2be) t
-  (code-char #xfffd)
-  2
+(define-external-format/variable-width (:ucs-2be :ucs2be)
+  :output-restart t
+  :replacement-character (code-char #xfffd)
+  :out-size-expr 2
+  :out-expr
   (if (< bits #x10000)
       (setf (sap-ref-16be sap tail) bits)
       (external-format-encoding-error stream bits))
-  2
-  (code-char (sap-ref-16be sap head))
-  ucs-2be->string-aref
-  string->ucs-2be)
+  :in-size-expr 2
+  :in-expr (code-char (sap-ref-16be sap head))
+  :octets-to-string-symbol ucs-2be->string-aref
+  :string-to-octets-symbol string->ucs-2be)
 
 (declaim (inline char->ucs-4le))
 (defun char->ucs-4le (char dest string pos)
@@ -418,26 +422,30 @@
 
 (instantiate-octets-definition define-ucs-4->string)
 
-(define-external-format/variable-width (:ucs-4le :ucs4le) nil
-  (code-char #xfffd)
-  4
-  (setf (sap-ref-32le sap tail) bits)
-  4
+(define-external-format/variable-width (:ucs-4le :ucs4le)
+  :output-restart nil
+  :replacement-character (code-char #xfffd)
+  :out-size-expr 4
+  :out-expr (setf (sap-ref-32le sap tail) bits)
+  :in-size-expr 4
+  :in-expr
   (let ((code (sap-ref-32le sap head)))
     (if (< code sb-xc:char-code-limit)
         (code-char code)
         (return-from decode-break-reason 4)))
-  ucs-4le->string-aref
-  string->ucs-4le)
+  :octets-to-string-symbol ucs-4le->string-aref
+  :string-to-octets-symbol string->ucs-4le)
 
-(define-external-format/variable-width (:ucs-4be :ucs4be) nil
-  (code-char #xfffd)
-  4
-  (setf (sap-ref-32be sap tail) bits)
-  4
+(define-external-format/variable-width (:ucs-4be :ucs4be)
+  :output-restart nil
+  :replacement-character (code-char #xfffd)
+  :out-size-expr 4
+  :out-expr (setf (sap-ref-32be sap tail) bits)
+  :in-size-expr 4
+  :in-expr
   (let ((code (sap-ref-32be sap head)))
     (if (< code sb-xc:char-code-limit)
         (code-char code)
         (return-from decode-break-reason 4)))
-  ucs-4be->string-aref
-  string->ucs-4be)
+  :octets-to-string-symbol ucs-4be->string-aref
+  :string-to-octets-symbol string->ucs-4be)
