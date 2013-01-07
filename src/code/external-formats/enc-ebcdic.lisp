@@ -64,7 +64,7 @@
      (,(make-od-name 'latin->string accessor) array astart aend #'ebcdic-us->code-mapper)))
 (instantiate-octets-definition define-ebcdic-us->string)
 
-(define-external-format/unibyte (:ebcdic-us :cp037 :|cp037| :ibm-037 :ibm037)
+(define-character-coding/unibyte (:ebcdic-us :cp037 :|cp037| :ibm-037 :ibm037)
   :out-form
   (let ((ebcdic-us-byte (code->ebcdic-us-mapper bits)))
     (if ebcdic-us-byte

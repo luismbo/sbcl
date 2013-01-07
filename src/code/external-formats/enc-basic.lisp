@@ -59,7 +59,7 @@
                 finally (return (coerce string 'simple-string))))))))
 (instantiate-octets-definition define-ascii->string)
 
-(define-external-format/unibyte
+(define-character-coding/unibyte
     (:ascii :us-ascii :ansi_x3.4-1968 :iso-646 :iso-646-us :|646|)
   :out-form
   (if (>= bits 128)
@@ -105,7 +105,7 @@
 ;;; Multiple names for the :ISO{,-}8859-* families are needed because on
 ;;; FreeBSD (and maybe other BSD systems), nl_langinfo("LATIN-1") will
 ;;; return "ISO8859-1" instead of "ISO-8859-1".
-(define-external-format/unibyte (:latin-1 :latin1 :iso-8859-1 :iso8859-1)
+(define-character-coding/unibyte (:latin-1 :latin1 :iso-8859-1 :iso8859-1)
   :out-form
   (if (>= bits 256)
       (external-format-encoding-error stream bits)
@@ -387,7 +387,7 @@
           (coerce string 'simple-string))))))
 (instantiate-octets-definition define-utf8->string)
 
-(define-external-format/variable-width (:utf-8 :utf8)
+(define-character-coding/variable-width (:utf-8 :utf8)
   :output-restart t
   :replacement-character #+sb-unicode (code-char #xfffd) #-sb-unicode #\?
   :out-size-expr

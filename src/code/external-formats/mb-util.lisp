@@ -248,7 +248,7 @@
        (instantiate-octets-definition ,define-mb->string)
 
        ;; for fd-stream.lisp
-       (define-external-format/variable-width ,aliases
+       (define-character-coding/variable-width ,aliases
          :output-restart t
          ;; KLUDGE: it so happens that at present (2009-10-22) none of
          ;; the external formats defined with

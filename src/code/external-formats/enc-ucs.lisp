@@ -235,7 +235,7 @@
 
 (instantiate-octets-definition define-ucs-2->string)
 
-(define-external-format/variable-width (:ucs-2le :ucs2le #+win32 :ucs2 #+win32 :ucs-2)
+(define-character-coding/variable-width (:ucs-2le :ucs2le #+win32 :ucs2 #+win32 :ucs-2)
   :output-restart t
   :replacement-character (code-char #xfffd)
   :out-size-expr 2
@@ -248,7 +248,7 @@
   :octets-to-string-symbol ucs-2le->string-aref
   :string-to-octets-symbol string->ucs-2le)
 
-(define-external-format/variable-width (:ucs-2be :ucs2be)
+(define-character-coding/variable-width (:ucs-2be :ucs2be)
   :output-restart t
   :replacement-character (code-char #xfffd)
   :out-size-expr 2
@@ -422,7 +422,7 @@
 
 (instantiate-octets-definition define-ucs-4->string)
 
-(define-external-format/variable-width (:ucs-4le :ucs4le)
+(define-character-coding/variable-width (:ucs-4le :ucs4le)
   :output-restart nil
   :replacement-character (code-char #xfffd)
   :out-size-expr 4
@@ -436,7 +436,7 @@
   :octets-to-string-symbol ucs-4le->string-aref
   :string-to-octets-symbol string->ucs-4le)
 
-(define-external-format/variable-width (:ucs-4be :ucs4be)
+(define-character-coding/variable-width (:ucs-4be :ucs4be)
   :output-restart nil
   :replacement-character (code-char #xfffd)
   :out-size-expr 4

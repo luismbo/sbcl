@@ -1,6 +1,6 @@
 (in-package "SB-IMPL")
 
-(define-external-format/unibyte-mapping (:cp437 :|cp437|)
+(define-character-coding/unibyte-mapping (:cp437 :|cp437|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -131,7 +131,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp850 :|cp850|)
+(define-character-coding/unibyte-mapping (:cp850 :|cp850|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -262,7 +262,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp852 :|cp852|)
+(define-character-coding/unibyte-mapping (:cp852 :|cp852|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -393,7 +393,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp855 :|cp855|)
+(define-character-coding/unibyte-mapping (:cp855 :|cp855|)
   (#x80 #x0452) ; CYRILLIC SMALL LETTER DJE
   (#x81 #x0402) ; CYRILLIC CAPITAL LETTER DJE
   (#x82 #x0453) ; CYRILLIC SMALL LETTER GJE
@@ -524,7 +524,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp857 :|cp857|)
+(define-character-coding/unibyte-mapping (:cp857 :|cp857|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -654,7 +654,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp860 :|cp860|)
+(define-character-coding/unibyte-mapping (:cp860 :|cp860|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -785,7 +785,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp861 :|cp861|)
+(define-character-coding/unibyte-mapping (:cp861 :|cp861|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -916,7 +916,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp862 :|cp862|)
+(define-character-coding/unibyte-mapping (:cp862 :|cp862|)
   (#x80 #x05D0) ; HEBREW LETTER ALEF
   (#x81 #x05D1) ; HEBREW LETTER BET
   (#x82 #x05D2) ; HEBREW LETTER GIMEL
@@ -1047,7 +1047,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp863 :|cp863|)
+(define-character-coding/unibyte-mapping (:cp863 :|cp863|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -1178,7 +1178,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp864 :|cp864|)
+(define-character-coding/unibyte-mapping (:cp864 :|cp864|)
   (#x80 #x00B0) ; DEGREE SIGN
   (#x81 #x00B7) ; MIDDLE DOT
   (#x82 #x2219) ; BULLET OPERATOR
@@ -1306,7 +1306,7 @@
   (#xFF nil)
 )
 
-(define-external-format/unibyte-mapping (:cp865 :|cp865|)
+(define-character-coding/unibyte-mapping (:cp865 :|cp865|)
   (#x80 #x00C7) ; LATIN CAPITAL LETTER C WITH CEDILLA
   (#x81 #x00FC) ; LATIN SMALL LETTER U WITH DIAERESIS
   (#x82 #x00E9) ; LATIN SMALL LETTER E WITH ACUTE
@@ -1437,7 +1437,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp866 :|cp866|)
+(define-character-coding/unibyte-mapping (:cp866 :|cp866|)
   (#x80 #x0410) ; CYRILLIC CAPITAL LETTER A
   (#x81 #x0411) ; CYRILLIC CAPITAL LETTER BE
   (#x82 #x0412) ; CYRILLIC CAPITAL LETTER VE
@@ -1568,7 +1568,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp869 :|cp869|)
+(define-character-coding/unibyte-mapping (:cp869 :|cp869|)
   (#x80 nil)
   (#x81 nil)
   (#x82 nil)
@@ -1699,7 +1699,7 @@
   (#xFF #x00A0) ; NO-BREAK SPACE
 )
 
-(define-external-format/unibyte-mapping (:cp874 :|cp874|)
+(define-character-coding/unibyte-mapping (:cp874 :|cp874|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 nil)

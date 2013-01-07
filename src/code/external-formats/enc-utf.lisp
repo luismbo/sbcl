@@ -255,7 +255,7 @@
 
 (instantiate-octets-definition define-utf-16->string)
 
-(define-external-format/variable-width (:utf-16le :utf16le)
+(define-character-coding/variable-width (:utf-16le :utf16le)
   :output-restart t
   :replacement-character
   (code-char #xfffd)
@@ -296,7 +296,7 @@
   :octets-to-string-symbol utf-16le->string-aref
   :string-to-octets-symbol string->utf-16le)
 
-(define-external-format/variable-width (:utf-16be :utf16be)
+(define-character-coding/variable-width (:utf-16be :utf16be)
   :output-restart t
   :replacement-character
   (code-char #xfffd)
@@ -508,7 +508,7 @@
 
 (instantiate-octets-definition define-utf-32->string)
 
-(define-external-format/variable-width (:utf-32le :utf32le)
+(define-character-coding/variable-width (:utf-32le :utf32le)
   :output-restart t
   :replacement-character (code-char #xfffd)
   :out-size-expr 4
@@ -526,7 +526,7 @@
   :octets-to-string-symbol utf-32le->string-aref
   :string-to-octets-symbol string->utf-32le)
 
-(define-external-format/variable-width (:utf-32be :utf32be)
+(define-character-coding/variable-width (:utf-32be :utf32be)
   :output-restart t
   :replacement-character (code-char #xfffd)
   :out-size-expr 4

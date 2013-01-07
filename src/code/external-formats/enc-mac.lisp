@@ -1,6 +1,6 @@
 (in-package "SB-IMPL")
 
-(define-external-format/unibyte-mapping
+(define-character-coding/unibyte-mapping
     (:mac-roman :|mac-roman| :|MacRoman| :mac :|mac| :macintosh :|macintosh|)
   (#x80 #x00C4) ; LATIN CAPITAL LETTER A WITH DIAERESIS
   (#x81 #x00C5) ; LATIN CAPITAL LETTER A WITH RING ABOVE
