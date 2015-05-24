@@ -861,7 +861,7 @@ Experimental."
               (cc-bytes-for-char-fun ef-entry)))
         (funcall (bytes-for-char-fun character-coding) #\x))))
 
-(defun bytes-for-char-fun (external-format)
+(defun bytes-for-char-fun (external-format) ; TODO is this used? shouldn't this use ef-bytes-for-char-fun?
   (if external-format
       (cc-bytes-for-char-fun (ef-character-coding external-format))
       (constantly 1)))
@@ -939,7 +939,7 @@ ERROR
   (declare (type (or null function-name function) if-does-not-exist))
   (destructuring-bind (character-coding-name
                        &key
-                       ((:newline-coding newline-coding-name) :unix)
+                       ((:newline-coding newline-coding-name) :unix) ; TODO platform-specific
                        replacement)
       (ensure-list spec)
     (let ((character-coding (find-character-coding

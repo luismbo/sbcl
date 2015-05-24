@@ -609,13 +609,9 @@
        ;; FIXME: Why this here? Doesn't seem necessary.
        ,(unless (eq (car buffering) :none)
           `(synchronize-stream-output ,stream-var))
-       ,(if restart
-            `(block output-nothing
-               ,@body
-               (setf (buffer-tail obuf) (+ tail ,size)))
-            `(progn
-               ,@body
-               (setf (buffer-tail obuf) (+ tail ,size))))
+       (,@(if restart '(block output-nothing) '(progn))
+        ,@body
+        (setf (buffer-tail obuf) (+ tail ,size)))
        ,(ecase (car buffering)
           (:none
            `(flush-output-buffer ,stream-var))
@@ -625,39 +621,35 @@
           (:full))
        (values))))
 
+;; TODO share code with next macro
 (defmacro def-output-routines/variable-width
     ((name-fmt size restart external-format &rest bufferings)
      &body body)
-  (declare (optimize (speed 1)))
-  (cons 'progn
-        (mapcar
-            (lambda (buffering)
-              (let ((function
-                     (intern (format nil name-fmt (string (car buffering))))))
-                `(progn
-                   (defun ,function (stream byte)
-                     (declare (ignorable byte))
-                     (output-wrapper/variable-width (stream ,size ,buffering ,restart)
-                       ,@body))
-                   (setf *output-routines*
-                         (nconc *output-routines*
-                                ',(mapcar
-                                   (lambda (type)
-                                     (list type
-                                           (car buffering)
-                                           function
-                                           1
-                                           external-format))
-                                   (cdr buffering)))))))
-            bufferings)))
+  (labels ((make-entry (mode name)
+             (lambda (type)
+               (list type mode name 1 external-format)))
+           (make-function (buffering)
+             (destructuring-bind (mode &rest element-types) buffering
+               (let ((name (intern (format nil name-fmt (string mode)))))
+                 `(progn
+                    (defun ,name (stream byte)
+                      (declare (ignorable byte))
+                      (output-wrapper/variable-width
+                          (stream ,size ,buffering ,restart)
+                        ,@body))
+                    (setf *output-routines* ; TODO
+                          (nconc *output-routines*
+                                 ',(mapcar (make-entry mode name)
+                                           element-types))))))))
+    `(progn ,@(mapcar #'make-function bufferings))))
 
 ;;; Define output routines that output numbers SIZE bytes long for the
 ;;; given bufferings. Use BODY to do the actual output.
 (defmacro def-output-routines ((name-fmt size restart &rest bufferings)
                                &body body)
-  (declare (optimize (speed 1)))
-  (cons 'progn
-        (mapcar
+
+  `(progn
+     ,@(mapcar
             (lambda (buffering)
               (let ((function
                      (intern (format nil name-fmt (string (car buffering))))))
@@ -1041,6 +1033,7 @@
                   (eof-or-lose ,stream-var ,eof-error ,eof-value))))))))
 
 ;;; a macro to wrap around all input routines to handle EOF-ERROR noise
+;; rewrite next two macros
 (defmacro input-wrapper ((stream bytes eof-error eof-value) &body read-forms)
   (with-unique-names (stream-var element-var)
     `(let* ((,stream-var ,stream)
@@ -1227,7 +1220,7 @@
             ))))
 
 (defun fd-stream-resync (stream)
-  (let ((entry (get-external-format (fd-stream-external-format stream))))
+  (let ((entry (get-external-format (fd-stream-external-format stream)))) ; TODO why not cache in stream?
     (when entry
       (funcall (ef-resync-fun entry) stream))))
 
