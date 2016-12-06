@@ -31,6 +31,24 @@
 
 (defstruct (character-coding
             (:constructor %make-character-coding)
+            (:constructor %copy-character-coding
+                          (other
+                           &key
+                           (read-n-chars-fun (cc-read-n-chars-fun other))
+                           (read-char-fun (cc-read-char-fun other))
+                           (write-char-none-buffered-fun (cc-write-char-none-buffered-fun other))
+                           (write-char-line-buffered-fun (cc-write-char-line-buffered-fun other))
+                           (write-char-full-buffered-fun (cc-write-char-full-buffered-fun other))
+                           &aux
+                           (names (cc-names other))
+                           (default-replacement-character (cc-default-replacement-character other))
+                           (bytes-for-char-fun (cc-bytes-for-char-fun other))
+                           (write-n-bytes-fun (cc-write-n-bytes-fun other))
+                           (resync-fun (cc-resync-fun other))
+                           (read-c-string-fun (cc-read-c-string-fun other))
+                           (write-c-string-fun (cc-write-c-string-fun other))
+                           (octets-to-string-fun (cc-octets-to-string-fun other))
+                           (string-to-octets-fun (cc-string-to-octets-fun other))))
             (:conc-name cc-)
             (:copier nil))
   ;; All the names that can refer to this character coding.  The first
@@ -75,24 +93,14 @@
       (cc-bytes-for-char-fun character-coding)
       (funcall (cc-bytes-for-char-fun character-coding) #\x)))
 
-(defun wrap-character-coding-functions (character-coding fun)
-  (declare (ignore fun))
-  (let ((result (%copy-character-coding character-coding)))
-    (macrolet ((frob (accessor)
-                 `(setf (,accessor result) (funcall fun (,accessor result)))))
-      #+later (frob ef-read-n-chars-fun)
-      #+later (frob ef-read-char-fun)
-      #+no (frob ef-write-n-bytes-fun)
-      #+later (frob ef-write-char-none-buffered-fun)
-      #+later (frob ef-write-char-line-buffered-fun)
-      #+later (frob ef-write-char-full-buffered-fun)
-      #+no (frob ef-resync-fun)
-      #+no (frob ef-bytes-for-char-fun)
-      #+no (frob ef-read-c-string-fun)
-      #+no (frob ef-write-c-string-fun)
-      #+no (frob ef-octets-to-string-fun)
-      #+no (frob ef-string-to-octets-fun))
-    result))
+(defun wrap-character-coding-functions (character-coding function)
+  (%copy-character-coding
+   character-coding
+   :read-n-chars-fun (funcall function (cc-read-n-chars-fun character-coding))
+   :read-char-fun (funcall function (cc-read-char-fun character-coding))
+   :write-char-none-buffered-fun (funcall function (cc-write-char-none-buffered-fun character-coding))
+   :write-char-line-buffered-fun (funcall function (cc-write-char-line-buffered-fun character-coding))
+   :write-char-full-buffered-fun (funcall function (cc-write-char-full-buffered-fun character-coding))))
 
 ;;; All available character codings. The table maps from
 ;;; character-coding names to CHARACTER-CODING structures.
@@ -794,41 +802,13 @@ Experimental."
      (maybe-wrap-write-char-fun
       (cc-write-char-full-buffered-fun character-coding)))))
 
-(defun make-external-format/maybe-handlerify
+(defun make-external-format/maybe-add-replacements
     (character-coding newline-coding replacement)
-  (flet ((replacement-handlerify (character-coding replacement)
-           (wrap-character-coding-functions
-            character-coding
-            (lambda (function)
-              (declare (type (or null function) function))
-              (when function
-                (lambda (&rest rest)
-                  (declare (dynamic-extent rest))
-                  (handler-bind
-                      ((stream-decoding-error
-                        (lambda (c)
-                          (declare (ignore c))
-                          (invoke-restart 'input-replacement replacement)))
-                       (stream-encoding-error
-                        (lambda (c)
-                          (declare (ignore c))
-                          (invoke-restart 'output-replacement replacement)))
-                       (octets-encoding-error
-                        #+TODO-was (lambda (c) (use-value replacement c))
-                        (lambda (c)
-                          (declare (ignore c))
-                          (invoke-restart 'use-value replacement)))
-                       (octet-decoding-error
-                        #+TODO-was (lambda (c) (use-value replacement c))
-                        (lambda (c)
-                          (declare (ignore c))
-                          (invoke-restart 'use-value replacement))))
-                    (apply function rest))))))))
-    (make-external-format
-     (if replacement
-         (replacement-handlerify character-coding replacement)
-         character-coding)
-     newline-coding)))
+  (make-external-format
+   (if replacement
+       (add-replacements-to-character-coding character-coding replacement)
+       character-coding)
+   newline-coding))
 
 (macrolet ((frob (accessor)
              (let ((ef-name (symbolicate 'ef- accessor))
@@ -871,7 +851,7 @@ Experimental."
            (explicit-check :result))
   (locally
       (declare (optimize (speed 3) (safety 0)))
-    (let ((external-format (get-external-format-or-lose external-format)))
+    (let ((external-format (find-external-format external-format))) ; TODO was get-external-format-OR-LOSE
       (funcall (ef-write-c-string-fun external-format) string))))
 
 (defun sb-alien::c-string-to-string (sap external-format element-type)
@@ -879,14 +859,14 @@ Experimental."
            (explicit-check :result))
   (locally
       (declare (optimize (speed 3) (safety 0)))
-    (let ((external-format (get-external-format-or-lose external-format)))
+    (let ((external-format (find-external-format external-format))) ; TODO was get-external-format-OR-LOSE
       (funcall (ef-read-c-string-fun external-format) sap element-type))))
 
-(defun wrap-external-format-functions (external-format fun)
-  (declare (ignore fun))
-  (let ((result (%copy-external-format external-format)))
+#+TODO-unused? (defun wrap-external-format-functions (external-format function)
+  (declare (ignore function))
+  (let ((result (%copy-character-coding external-format)))
     (macrolet ((frob (accessor)
-                 `(setf (,accessor result) (funcall fun (,accessor result)))))
+                 `(setf (,accessor result) (funcall function (,accessor result)))))
       #+later (frob ef-read-n-chars-fun)
       #+later (frob ef-read-char-fun)
       #+no (frob ef-write-n-bytes-fun)
@@ -914,11 +894,15 @@ Experimental."
       ((cons keyword) ; TODO normalize newline-coding name
        (cons name (rest spec))))))
 
+;;; Defined in octets.lisp
+(declaim (ftype (function (character-coding t) (values character-coding &optional))
+                add-replacements-to-character-coding))
+
 (defun find-external-format (spec &key if-does-not-exist)
   "Return the EXTERNAL-FORMAT structure designated by SPEC which can
 be of one of the following forms
 
-  KEYWORD
+  KEYWORD ; TODO how about accepting strings and keywords here? that would make default external format detection less awkward
 
     Name of a character coding. TODO Newline coding
 
@@ -949,8 +933,68 @@ ERROR
                            newline-coding-name
                            :if-does-not-exist if-does-not-exist)))
       (when (and character-coding newline-coding)
-        (make-external-format/maybe-handlerify
+        (make-external-format/maybe-add-replacements
          character-coding newline-coding replacement)))))
+
+
+;;; Default external format
+
+(defvar *default-external-format* nil)
+
+#-win32
+(defun unix-default-codeset ()
+  (let ((code-set (or #- android
+                      (alien-funcall
+                       (extern-alien
+                        "nl_langinfo"
+                        (function (c-string :external-format :latin-1) int))
+                       sb-unix:codeset)
+                      "LATIN-1")))
+    (intern code-set *keyword-package*)))
+
+(defun default-external-format ()
+  (or *default-external-format*
+      ;; On non-unicode, use iso-8859-1 instead of detecting it from
+      ;; the locale settings. Defaulting to an external-format which
+      ;; can represent characters that the CHARACTER type can't
+      ;; doesn't seem very sensible.
+      #-sb-unicode
+      (setf *default-external-format* :latin-1)
+      (let ((external-format #-win32 (intern (or #-android
+                                                 (alien-funcall
+                                                  (extern-alien
+                                                   "nl_langinfo"
+                                                   (function (c-string :external-format :latin-1)
+                                                             int))
+                                                  sb-unix:codeset)
+                                                 "LATIN-1")
+                                             *keyword-package*)
+                             #+win32 (sb-win32::ansi-codepage)))
+        (/show0 "cold-printing defaulted external-format:")
+        #+sb-show
+        (cold-print external-format)
+        (/show0 "matching to known aliases")
+        (let ((entry (find-external-format external-format)))
+          (cond
+            (entry
+             (/show0 "matched"))
+            (t
+             ;; FIXME! This WARN would try to do printing
+             ;; before the streams have been initialized,
+             ;; causing an infinite erroring loop. We should
+             ;; either print it by calling to C, or delay the
+             ;; warning until later. Since we're in freeze
+             ;; right now, and the warning isn't really
+             ;; essential, I'm doing what's least likely to
+             ;; cause damage, and commenting it out. This
+             ;; should be revisited after 0.9.17. -- JES,
+             ;; 2006-09-21
+             #+nil
+             (warn "Invalid external-format ~A; using LATIN-1"
+                   external-format)
+             (setf external-format :latin-1))))
+        (/show0 "/default external format ok")
+        (setf *default-external-format* external-format))))
 
 
 ;;;; Backward compatibility

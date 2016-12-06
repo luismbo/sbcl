@@ -11,6 +11,8 @@
 
 (in-package "SB-IMPL")
 
+(declaim (ftype function get-external-format get-external-format-or-lose default-external-format canonize-external-format))
+
 ;;;; BUFFER
 ;;;;
 ;;;; Streams hold BUFFER objects, which contain a SAP, size of the
