@@ -1068,24 +1068,19 @@
 ;;; Make sure there are at least BYTES number of bytes in the input
 ;;; buffer. Keep calling REFILL-INPUT-BUFFER until that condition is met.
 (defmacro input-at-least (stream bytes)
-  (let ((stream-var (gensym "STREAM"))
-        (bytes-var (gensym "BYTES"))
-        (buffer-var (gensym "IBUF")))
-    `(let* ((,stream-var ,stream)
-            (,bytes-var ,bytes)
-            (,buffer-var (fd-stream-ibuf ,stream-var)))
-       (loop
-         (when (>= (- (buffer-tail ,buffer-var)
-                      (buffer-head ,buffer-var))
-                   ,bytes-var)
-           (return))
-         (refill-input-buffer ,stream-var)))))
+  (once-only ((stream stream)
+              (bytes bytes)
+              (buffer `(fd-stream-ibuf ,stream)))
+    `(loop
+        (when (>= (- (buffer-tail ,buffer)
+                     (buffer-head ,buffer))
+                  ,bytes)
+          (return))
+        (refill-input-buffer ,stream))))
 
 (defmacro input-wrapper/variable-width ((stream bytes eof-error eof-value)
                                         &body read-forms)
-  (let ((stream-var (gensym "STREAM"))
-        (retry-var (gensym "RETRY"))
-        (element-var (gensym "ELT")))
+  (with-unique-names (stream-var retry-var element-var)
     `(let* ((,stream-var ,stream)
             (ibuf (fd-stream-ibuf ,stream-var))
             (size nil))
@@ -1145,8 +1140,7 @@
 
 ;;; a macro to wrap around all input routines to handle EOF-ERROR noise
 (defmacro input-wrapper ((stream bytes eof-error eof-value) &body read-forms)
-  (let ((stream-var (gensym "STREAM"))
-        (element-var (gensym "ELT")))
+  (with-unique-names (stream-var element-var)
     `(let* ((,stream-var ,stream)
             (ibuf (fd-stream-ibuf ,stream-var)))
        (if (> (length (fd-stream-instead ,stream-var)) 0)
