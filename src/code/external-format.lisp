@@ -17,6 +17,16 @@
 (deftype error-policy ()
   '(or null function-name function))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun ensure-list-of-names (context name-or-names)
+    (let* ((names (ensure-list name-or-names))
+           (offender (find-if-not #'keywordp names)))
+      (when offender
+        (error "~@<~A name ~S is not a keyword.~@:>"
+               context offender))
+      names)))
+
+
 ;;; CHARACTER-CODING
 
 (defstruct (character-coding
@@ -129,7 +139,7 @@ Experimental."
   (declare (ignore if-does-not-exist))
   (setf (gethash designator **character-codings**) new-value))
 
-(defmacro define-character-coding ((&whole names canonical-name &rest other-names)
+(defmacro define-character-coding (name-or-names
                                    &rest args
                                    &key
                                    (default-replacement-character (missing-arg))
@@ -145,7 +155,7 @@ Experimental."
                                    (write-c-string-fun (missing-arg))
                                    (octets-to-string-fun (missing-arg))
                                    (string-to-octets-fun (missing-arg)))
-  (declare (ignore canonical-name other-names default-replacement-character read-n-chars-fun
+  (declare (ignore default-replacement-character read-n-chars-fun
                    read-char-fun write-n-bytes-fun
                    write-char-none-buffered-fun
                    write-char-line-buffered-fun
@@ -153,10 +163,28 @@ Experimental."
                    bytes-for-char-fun read-c-string-fun
                    write-c-string-fun octets-to-string-fun
                    string-to-octets-fun))
-  `(let ((entry (%make-character-coding :names ',names ,@args)))
-     (dolist (name ',names)
-       (setf (find-character-coding name) entry))
-     entry))
+  (let* ((names (with-current-source-form (name-or-names)
+                  (ensure-list-of-names "character coding" name-or-names)))
+         (canonical-name (first names)))
+    `(let ((character-coding (%make-character-coding :names ',names ,@args)))
+       ,@(loop for name in names
+            collect `(setf (find-character-coding ,name) character-coding))
+       ,canonical-name)))
+
+(defmacro define-character-coding/unibyte
+    ((canonical-name &rest other-names)
+     &key
+     (out-form                (missing-arg))
+     (in-form                 (missing-arg))
+     (octets-to-string-symbol (missing-arg))
+     (string-to-octets-symbol (missing-arg)))
+  `(define-character-coding/variable-width (,canonical-name ,@other-names)
+     :output-restart t
+     :replacement-character #\?
+     :out-size-expr 1 :out-expr ,out-form
+     :in-size-expr  1 :in-expr  ,in-form
+     :octets-to-string-symbol ,octets-to-string-symbol
+     :string-to-octets-symbol ,string-to-octets-symbol))
 
 (defmacro define-character-coding/unibyte-mapping
     ((canonical-name &rest other-names) &body exceptions)
@@ -217,21 +245,6 @@ Experimental."
                (return-from decode-break-reason 1)))
          :octets-to-string-symbol ,->string-aref-name
          :string-to-octets-symbol ,string->-name))))
-
-(defmacro define-character-coding/unibyte
-    ((canonical-name &rest other-names)
-     &key
-     (out-form                (missing-arg))
-     (in-form                 (missing-arg))
-     (octets-to-string-symbol (missing-arg))
-     (string-to-octets-symbol (missing-arg)))
-  `(define-character-coding/variable-width (,canonical-name ,@other-names)
-     :output-restart t
-     :replacement-character #\?
-     :out-size-expr 1 :out-expr ,out-form
-     :in-size-expr  1 :in-expr  ,in-form
-     :octets-to-string-symbol ,octets-to-string-symbol
-     :string-to-octets-symbol ,string-to-octets-symbol))
 
 (defmacro define-character-coding/variable-width
     ((&whole names canonical-name &rest other-names)
@@ -643,30 +656,32 @@ Experimental."
 
 ;; TODO document
 (defmacro define-newline-coding (name-or-names &key newline-sequence)
-  (flet ((make-read-newline-fun ()
-           `(lambda (stream eof-error)
-              (declare (type stream stream)) ; TODO fd-stream?
-              ,(make-newline-reader newline-sequence)))
-         (make-write-newline-fun ()
-           `(lambda (write-byte-fun stream)
-              (declare (type function write-byte-fun)
-                       (type stream stream)) ; TODO fd-stream?
-              (setf (fd-stream-output-column stream) 0)
-              ,@(mapcar (lambda (byte) ; TODO write whole sequence at once
-                          `(funcall write-byte-fun stream ,byte))
-                        newline-sequence))))
-    (let ((names (ensure-list name-or-names))
-          (trivialp (equal newline-sequence '(#x0a))))
-      `(let* ((entry (%make-newline-coding
-                      :names             ',names
-                      :newline-sequence  (map 'string #'code-char ',newline-sequence) ; TODO unused?
-                      :read-newline-fun  ,(unless trivialp
-                                            (make-read-newline-fun))
-                      :write-newline-fun ,(unless trivialp
-                                            (make-write-newline-fun)))))
-         (dolist (name ',names)
-           (setf (find-newline-coding name) entry))
-         entry))))
+  (let ((names (with-current-source-form (name-or-names)
+                 (ensure-list-of-names "newline coding" name-or-names)))
+        (trivialp (equal newline-sequence '(#x0a))))
+    (flet ((make-read-newline-fun ()
+             `(lambda (stream eof-error)
+                (declare (type stream stream)) ; TODO fd-stream?
+                ,(make-newline-reader newline-sequence)))
+           (make-write-newline-fun ()
+             `(lambda (write-byte-fun stream)
+                (declare (type function write-byte-fun)
+                         (type stream stream)) ; TODO fd-stream?
+                (setf (fd-stream-output-column stream) 0)
+                ,@(mapcar (lambda (byte) ; TODO write whole sequence at once
+                            `(funcall write-byte-fun stream ,byte))
+                          newline-sequence))))
+      `(let ((newline-coding
+              (%make-newline-coding
+               :names             ',names
+               :newline-sequence  (map 'string #'code-char ',newline-sequence) ; TODO unused?
+               :read-newline-fun  ,(unless trivialp
+                                     (make-read-newline-fun))
+               :write-newline-fun ,(unless trivialp
+                                     (make-write-newline-fun)))))
+         ,@(loop for name in names
+              collect `(setf (find-newline-coding ,name) newline-coding))
+         newline-coding))))
 
 (define-newline-coding :unix
   :newline-sequence (#x0a))
@@ -920,52 +935,22 @@ NIL
 
 ERROR
 
-     TODO Signal an error."
-  (declare (type (or null symbol function) if-does-not-exist))
-  (flet ((replacement-handlerify (character-coding replacement)
-           (wrap-character-coding-functions
-            character-coding
-            (lambda (fun)
-              (when fun
-                (lambda (&rest rest)
-                  (declare (dynamic-extent rest))
-                  (handler-bind
-                      ((stream-decoding-error
-                         (lambda (c)
-                           (declare (ignore c))
-                           (invoke-restart 'input-replacement replacement)))
-                       (stream-encoding-error
-                         (lambda (c)
-                           (declare (ignore c))
-                           (invoke-restart 'output-replacement replacement)))
-                       (octets-encoding-error
-                         #+TODO-was (lambda (c) (use-value replacement c))
-                         (lambda (c)
-                           (declare (ignore c))
-                           (invoke-restart 'use-value replacement)))
-                       (octet-decoding-error
-                         #+TODO-was (lambda (c) (use-value replacement c))
-                         (lambda (c)
-                           (declare (ignore c))
-                           (invoke-restart 'use-value replacement))))
-                    (apply fun rest))))))))
-    (destructuring-bind (character-coding-name
-                         &key
-                         (newline-coding-name :unix)
-                         replacement) (if (consp spec) spec (list spec))
-      (let ((character-coding (find-character-coding
-                               character-coding-name
-                               :if-does-not-exist if-does-not-exist))
-            (newline-coding (find-newline-coding
-                             newline-coding-name
-                             :if-does-not-exist if-does-not-exist)))
-        (when (and character-coding newline-coding)
-          (make-external-format
-            (if replacement
-                (replacement-handlerify
-                 character-coding replacement)
-                character-coding)
-            newline-coding))))))
+  TODO Signal an error."
+  (declare (type (or null function-name function) if-does-not-exist))
+  (destructuring-bind (character-coding-name
+                       &key
+                       ((:newline-coding newline-coding-name) :unix)
+                       replacement)
+      (ensure-list spec)
+    (let ((character-coding (find-character-coding
+                             character-coding-name
+                             :if-does-not-exist if-does-not-exist))
+          (newline-coding (find-newline-coding
+                           newline-coding-name
+                           :if-does-not-exist if-does-not-exist)))
+      (when (and character-coding newline-coding)
+        (make-external-format/maybe-handlerify
+         character-coding newline-coding replacement)))))
 
 
 ;;;; Backward compatibility
