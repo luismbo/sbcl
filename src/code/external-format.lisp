@@ -597,6 +597,12 @@ Experimental."
   (print-unreadable-object (object stream :type t :identity t)
     (princ (nc-name object) stream)))
 
+(defun nc-single-character-p (newline-coding)
+  (= (length (nc-newline-sequence newline-coding)) 1))
+
+(defun nc-identity-p (newline-coding)
+  (string= (string #\Newline) (nc-newline-sequence newline-coding)))
+
 ;;; All available newline codings. The table maps from newline coding
 ;;; names to NEWLINE-CODING instances.
 (declaim (type hash-table **newline-codings**))
@@ -691,15 +697,6 @@ Experimental."
               collect `(setf (find-newline-coding ,name) newline-coding))
          newline-coding))))
 
-(define-newline-coding :unix
-  :newline-sequence (#x0a))
-
-(define-newline-coding :mac
-  :newline-sequence (#x0d))
-
-(define-newline-coding (:dos :windows)
-  :newline-sequence (#x0d #x0a))
-
 
 ;;; EXTERNAL-FORMAT
 
@@ -715,6 +712,7 @@ Experimental."
   (read-char-fun                (missing-arg) :type function           :read-only t)
   (read-n-chars-fun             (missing-arg) :type function           :read-only t)
   ;; Writing characters to streams.
+  (write-n-bytes-fun            (missing-arg) :type function           :read-only t)
   (write-char-none-buffered-fun (missing-arg) :type function           :read-only t)
   (write-char-line-buffered-fun (missing-arg) :type function           :read-only t)
   (write-char-full-buffered-fun (missing-arg) :type function           :read-only t))
@@ -758,11 +756,79 @@ Experimental."
                  fun)))
          (maybe-wrap-read-n-chars-fun (fun)
            (declare (type function fun))
-           (let ((read-newline-fun (nc-read-newline-fun newline-coding)))
-             (if read-newline-fun
-                 (lambda (stream eof-error eof-value) ; TODO types
-                   (funcall read-newline-fun fun stream eof-error eof-value))
-                 fun)))
+           (let ((newline-sequence (nc-newline-sequence newline-coding)))
+             (cond
+               ((nc-identity-p newline-coding)
+                fun)
+               ((nc-single-character-p newline-coding)
+                (let ((newline-character (aref newline-sequence 0)))
+                  (lambda (stream buffer start requested eof-error-p)
+                    (declare (type string buffer))
+                    (let ((count (funcall fun stream buffer start requested eof-error-p)))
+                      (nsubstitute #\Newline newline-character buffer
+                                   :start start :end (+ start count))
+                      count))))
+               (t
+                (let ((newline-sequence (coerce newline-sequence 'simple-base-string))) ; TODO necessary?
+                  (lambda (stream buffer start requested eof-error-p)
+                    (declare (type string buffer))
+                    (let* ((count (funcall fun stream buffer start requested eof-error-p))
+                           (end (+ start count)))
+                      (declare (type index count))
+                      (loop for previous = start then index
+                         for index = (search newline-sequence buffer
+                                             :start2 previous :end2 end)
+                         while index do
+                           (setf (aref buffer index)
+                                 #\Newline
+                                 (subseq buffer (+ index 1) (- end 1))
+                                 (subseq buffer (+ index 2) end))
+                           (incf index)
+                           (decf count))
+                      count)))))))
+
+         (maybe-wrap-write-n-bytes-fun (fun)
+           (declare (type function fun))
+           (cond
+             ((nc-identity-p newline-coding)
+              fun)
+             ((nc-single-character-p newline-coding)
+              (let* ((newline-sequence (nc-newline-sequence newline-coding))
+                     (newline-character (aref newline-sequence 0)))
+                (lambda (stream buffer flush-p start end)
+                  (declare (type string buffer))
+                  (let ((buffer (substitute newline-character #\Newline buffer
+                                            :start start :end end)))
+                    (funcall fun stream buffer flush-p 0 (- end start))))))
+             (t
+              (let* ((newline-sequence (nc-newline-sequence newline-coding))
+                     (newline-sequence-length (length newline-sequence)))
+                (lambda (stream buffer flush-p start end)
+                  (let ((first-newline (position #\Newline buffer
+                                                 :start start :end end)))
+                    (if first-newline
+                        (let* ((newline-count (1+ (count #\Newline buffer
+                                                         :start (1+ first-newline)
+                                                         :end end)))
+                               (new-length (+ (- end start newline-count)
+                                              (* newline-sequence-length newline-count)))
+                               (new-buffer (make-vector-like buffer new-length)))
+                          (loop for previous = start then (1+ index)
+                             for index = (position #\Newline buffer
+                                                   :start previous :end end)
+                             for previous* = 0 then index*
+                             for index* = (when index
+                                            (+ previous* (- index previous)))
+                             while index
+                             do (setf (subseq new-buffer previous* index*)
+                                      (subseq buffer previous index)
+                                      (subseq new-buffer index* (incf index* newline-sequence-length))
+                                      newline-sequence)
+                             finally (unless (eql previous end)
+                                       (setf (subseq new-buffer previous*)
+                                             (subseq buffer previous))))
+                          (funcall fun stream new-buffer flush-p 0 new-length))
+                        (funcall fun stream buffer flush-p start end))))))))
 
          (maybe-wrap-write-char-fun (fun)
            (declare (type function fun))
@@ -780,7 +846,7 @@ Experimental."
     (%make-external-format
      :character-coding character-coding
      :newline-coding   newline-coding
-     ;;
+     ;; Size
      :bytes-for-char-fun
      (maybe-wrap-bytes-for-char-fun
       (cc-bytes-for-char-fun character-coding))
@@ -792,6 +858,9 @@ Experimental."
      (maybe-wrap-read-n-chars-fun
       (cc-read-n-chars-fun character-coding))
      ;; Writing characters to streams
+     :write-n-bytes-fun
+     (maybe-wrap-write-n-bytes-fun
+      (cc-write-n-bytes-fun character-coding))
      :write-char-none-buffered-fun
      (maybe-wrap-write-char-fun
       (cc-write-char-none-buffered-fun character-coding))
@@ -817,8 +886,6 @@ Experimental."
                   (,cc-name (ef-character-coding external-format))))))
   (frob default-replacement-character)
 
-  (frob write-n-bytes-fun)
-
   (frob resync-fun)
 
   (frob read-c-string-fun)
@@ -829,7 +896,8 @@ Experimental."
 
 (defun variable-width-external-format-p (external-format)
   (and external-format
-       (variable-width-char-coding-p (ef-character-coding external-format))))
+       (variable-width-character-coding-p
+        (ef-character-coding external-format))))
 
 (defun ef-char-size (ef-entry)
   (let ((character-coding (ef-character-coding ef-entry)))

@@ -64,7 +64,7 @@
   #+sb-xc-host
   t
   #-sb-xc-host
-  (let ((external-format (sb-impl::get-external-format
+  (let ((external-format (sb-impl::find-external-format
                           ;; Can't use C-STRING-EXTERNAL-FORMAT here,
                           ;; since the meaning of :DEFAULT can change
                           ;; when *DEFAULT-C-STRING-EXTERNAL-FORMAT*

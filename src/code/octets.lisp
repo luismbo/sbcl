@@ -230,9 +230,10 @@
 ;;;; public interface
 
 (defun maybe-defaulted-external-format (external-format)
-  (get-external-format-or-lose (if (eq external-format :default)
-                                   (default-external-format)
-                                   external-format)))
+  (find-external-format (if (eq external-format :default)
+                            (default-external-format)
+                            external-format)
+                        :if-does-not-exist #'error))
 
 (declaim (ftype (sfunction ((vector (unsigned-byte 8)) &key (:external-format t)
                                    (:start index)
@@ -345,7 +346,7 @@ STRING (or the subsequence bounded by START and END)."
 
 ;;; This function was moved from 'fd-stream' because it depends on
 ;;; the various error classes, two of which are defined just above.
-(defun get-external-format (external-format)
+#+no (defun get-external-format (external-format) ; TODO
   (flet ((keyword-external-format (keyword)
            (declare (type keyword keyword))
            (gethash keyword *external-formats*))
@@ -361,7 +362,7 @@ STRING (or the subsequence bounded by START and END)."
              (replacement-handlerify entry replacement)
              entry))))))
 
-(push
+(push ; TODO does this still do anything?
   `("SB-IMPL"
     char-class char-class2 char-class3
     ,@(let (macros)
