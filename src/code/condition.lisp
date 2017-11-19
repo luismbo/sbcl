@@ -1895,23 +1895,134 @@ the restart does not exist."))
                stream
                octets)))))
 
+;;; encoding condition
+
+(define-condition octets-encoding-error (character-encoding-error)
+  ((string :initarg :string :reader octets-encoding-error-string)
+   (position :initarg :position :reader octets-encoding-error-position)
+   (external-format :initarg :external-format
+                    :reader octets-encoding-error-external-format))
+  (:report (lambda (c s)
+             (format s "Unable to encode character ~A as ~S."
+                     (char-code (char (octets-encoding-error-string c)
+                                      (octets-encoding-error-position c)))
+                     (octets-encoding-error-external-format c)))))
+
+(declaim (ftype (sfunction (t t t) (simple-array (unsigned-byte 8) 1))
+                encoding-error))
+(defun encoding-error (external-format string pos)
+  (restart-case
+      (error 'octets-encoding-error
+             :external-format external-format
+             :string string
+             :position pos)
+    (use-value (replacement)
+      :report "Supply a set of bytes to use in place of the invalid one."
+      :interactive
+      (lambda ()
+        (read-evaluated-form
+         "Replacement byte, bytes, character, or string (evaluated): "))
+      (typecase replacement
+        ((unsigned-byte 8)
+         (make-array 1 :element-type '(unsigned-byte 8) :initial-element replacement))
+        (character
+         (string-to-octets (string replacement)
+                           :external-format external-format))
+        (string
+         (string-to-octets replacement
+                           :external-format external-format))
+        (t
+         (coerce replacement '(simple-array (unsigned-byte 8) (*))))))))
+
+;;; decoding condition
+
+;;; for UTF8, the specific condition signalled will be a generalized
+;;; instance of one of the following:
+;;;
+;;;   end-of-input-in-character
+;;;   character-out-of-range
+;;;   invalid-utf8-starter-byte
+;;;   invalid-utf8-continuation-byte
+;;;
+;;; Of these, the only one truly likely to be of interest to calling
+;;; code is end-of-input-in-character (in which case it's likely to
+;;; want to make a note of octet-decoding-error-start, supply "" as a
+;;; replacement string, and then move that last chunk of bytes to the
+;;; beginning of its buffer for the next go round) but they're all
+;;; provided on the off chance they're of interest.
+
+(define-condition octet-decoding-error (character-decoding-error)
+  ((array :initarg :array :accessor octet-decoding-error-array)
+   (start :initarg :start :accessor octet-decoding-error-start)
+   (end :initarg :end :accessor octet-decoding-error-end)
+   (position :initarg :pos :accessor octet-decoding-bad-byte-position)
+   (external-format :initarg :external-format
+                    :accessor octet-decoding-error-external-format))
+  (:report
+   (lambda (condition stream)
+     (format stream "Illegal ~S character starting at byte position ~D."
+             (octet-decoding-error-external-format condition)
+             (octet-decoding-error-start condition)))))
+
+(define-condition end-of-input-in-character (octet-decoding-error) ())
+(define-condition character-out-of-range (octet-decoding-error) ())
+(define-condition invalid-utf8-starter-byte (octet-decoding-error) ())
+(define-condition invalid-utf8-continuation-byte (octet-decoding-error) ())
+(define-condition overlong-utf8-sequence (octet-decoding-error) ())
+
+(define-condition malformed-ascii (octet-decoding-error) ())
+
+(defun decoding-error (array start end external-format reason pos)
+  (restart-case
+      (error reason
+             :external-format external-format
+             :array array
+             :start start
+             :end end
+             :pos pos)
+    (use-value (s)
+      :report "Supply a replacement string designator."
+      :interactive
+      (lambda ()
+        (read-evaluated-form
+         "Enter a replacement string designator (evaluated): "))
+      (string s))))
+
 (define-condition c-string-encoding-error (character-encoding-error)
   ()
   (:report
    (lambda (c s)
      (format s "~@<~S c-string encoding error: ~2I~_~
-                  the character with code ~D cannot be encoded.~@:>"
-               (character-coding-error-external-format c)
-               (character-encoding-error-code c)))))
+                the character with code ~D cannot be encoded.~@:>"
+             (character-coding-error-external-format c)
+             (character-encoding-error-code c)))))
+
+(defun c-string-encoding-error (external-format code)
+  (declare (optimize allow-non-returning-tail-call))
+  (error 'c-string-encoding-error
+         :external-format external-format
+         :code code))
 
 (define-condition c-string-decoding-error (character-decoding-error)
   ()
   (:report
    (lambda (c s)
      (format s "~@<~S c-string decoding error: ~2I~_~
-                  the octet sequence ~S cannot be decoded.~@:>"
+                the octet sequence ~S cannot be decoded.~@:>"
              (character-coding-error-external-format c)
              (character-decoding-error-octets c)))))
+
+(macrolet ((sap-ref-octets (sap offset count)
+             `(let ((buffer
+                      (make-array (the fixnum ,count) :element-type '(unsigned-byte 8))))
+                (%byte-blt ,sap ,offset buffer 0 ,count)
+                buffer)))
+
+  (defun c-string-decoding-error (external-format sap offset count)
+    (declare (optimize allow-non-returning-tail-call))
+    (error 'c-string-decoding-error
+           :external-format external-format
+           :octets (sap-ref-octets sap offset count))))
 
 (define-condition control-stack-exhausted (storage-condition)
   ()
