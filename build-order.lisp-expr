@@ -251,8 +251,10 @@
 
  ("src/code/symbol"        :not-host)
  ("src/code/late-cas"      :not-host)
- ("src/code/fd-stream"     :not-host)
- ("src/code/stream"        :not-host)
+
+ ("src/code/external-format" :not-host)
+ ("src/code/fd-stream"       :not-host)
+ ("src/code/stream"          :not-host)
  ("src/code/early-format")
 
  ("src/code/common-os" :not-host)
