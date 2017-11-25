@@ -34,10 +34,10 @@
 ;;;; CRLF/DOS/Windows newline codings
 
 ;;; Input:  #x0d #x0a -> #\Newline
-;;;         #x0a      -> error?
-;;;         #x0d      -> error?
+;;;         #x0a      -> #\Newline
+;;;         #x0d      -> #\Return
 ;;; Output: #\Newline -> #x0d #x0a
-;;;         #\Return  -> ?
+;;;         #\Return  -> #x0d
 (define-newline-coding (:crlf :dos :windows)
   :newline-sequence (#x0d #x0a))
 
@@ -45,7 +45,7 @@
 ;;;         #x0a      -> #\Newline
 ;;;         #x0d      -> #\Newline
 ;;; Output: #\Newline -> #x0d #x0a
-;;;         #\Return  -> ?
+;;;         #\Return  -> #x0d
 (define-newline-coding (:auto/crlf :auto/dos :auto/windows)
   :newline-sequence (#x0d #x0a))
 
@@ -56,14 +56,14 @@
 ;;;         #x0a      -> #\Newline
 ;;;         #x0d      -> #\Newline
 ;;; Output: #\Newline -> #x0d
-;;;         #\Return  -> ?
-(define-newline-coding (:cr :carrige-return :mac)
+;;;         #\Return  -> #x0d
+(define-newline-coding (:cr :carrige-return)
   :newline-sequence (#x0d))
 
 ;;; Input:  #x0d #x0a -> #\Newline
 ;;;         #x0a      -> #\Newline
 ;;;         #x0d      -> #\Newline
 ;;; Output: #\Newline -> #x0d
-;;;         #\REturn  -> ?
-(define-newline-coding (:auto/cr :auto/carrige-return :auto/mac)
+;;;         #\Return  -> #x0d
+(define-newline-coding (:auto/cr :auto/carrige-return)
   :newline-sequence (#x0d))
