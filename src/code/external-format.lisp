@@ -147,6 +147,11 @@ Experimental."
   (declare (ignore if-does-not-exist))
   (setf (gethash designator **character-codings**) new-value))
 
+(defun register-character-coding (names character-coding)
+  (dolist (name names)
+    (setf (find-character-coding name) character-coding))
+  character-coding)
+
 (defmacro define-character-coding (name-or-names
                                    &rest args
                                    &key
@@ -172,12 +177,11 @@ Experimental."
                    write-c-string-fun octets-to-string-fun
                    string-to-octets-fun))
   (let* ((names (with-current-source-form (name-or-names)
-                  (ensure-list-of-names "character coding" name-or-names)))
-         (canonical-name (first names)))
-    `(let ((character-coding (%make-character-coding :names ',names ,@args)))
-       ,@(loop for name in names
-            collect `(setf (find-character-coding ,name) character-coding))
-       ,canonical-name)))
+                  (ensure-list-of-names "character coding" name-or-names))))
+    `(let ((names ',names))
+       (register-character-coding
+        names (%make-character-coding :names names ,@args))
+       (first names))))
 
 (defmacro define-character-coding/unibyte
     ((canonical-name &rest other-names)
@@ -649,53 +653,27 @@ Experimental."
   (declare (ignore if-does-not-exist))
   (setf (gethash designator **newline-codings**) new-value))
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun make-newline-reader (octet-sequence) ; TODO just put into macro
-    (flet ((make-unread (amount)
-             (unless (zerop amount)
-               `((decf (buffer-head (fd-stream-ibuf stream)) ,amount)) ; TODO are these fd-streams?
-               )))
-      `(block nil
-         ,@(loop :for position :from 0
-              :for octet :in octet-sequence :collect
-              `(let ((byte (input-unsigned-8bit-byte stream eof-error :eof)))
-                 (cond
-                   ((eql byte :eof)
-                    ,@(make-unread position)
-                    (return :eof))
-                   ((not (eql byte ,octet))
-                    ,@(make-unread position)
-                    (return :mismatch)))))
-         t))))
+(defun register-newline-coding (names newline-coding)
+  (dolist (name names)
+    (setf (find-newline-coding name) newline-coding))
+  newline-coding)
 
 ;; TODO document
-(defmacro define-newline-coding (name-or-names &key newline-sequence)
+(defmacro define-newline-coding (name-or-names
+                                 &key
+                                 (newline-sequence (missing-arg))
+                                 (read-newline-fun (missing-arg))
+                                 (write-newline-fun (missing-arg)))
   (let ((names (with-current-source-form (name-or-names)
-                 (ensure-list-of-names "newline coding" name-or-names)))
-        (trivialp (equal newline-sequence '(#x0a))))
-    (flet ((make-read-newline-fun ()
-             `(lambda (stream eof-error)
-                (declare (type stream stream)) ; TODO fd-stream?
-                ,(make-newline-reader newline-sequence)))
-           (make-write-newline-fun ()
-             `(lambda (write-byte-fun stream)
-                (declare (type function write-byte-fun)
-                         (type stream stream)) ; TODO fd-stream?
-                (setf (fd-stream-output-column stream) 0)
-                ,@(mapcar (lambda (byte) ; TODO write whole sequence at once
-                            `(funcall write-byte-fun stream ,byte))
-                          newline-sequence))))
-      `(let ((newline-coding
-              (%make-newline-coding
-               :names             ',names
-               :newline-sequence  (map 'string #'code-char ',newline-sequence) ; TODO unused?
-               :read-newline-fun  ,(unless trivialp
-                                     (make-read-newline-fun))
-               :write-newline-fun ,(unless trivialp
-                                     (make-write-newline-fun)))))
-         ,@(loop for name in names
-              collect `(setf (find-newline-coding ,name) newline-coding))
-         newline-coding))))
+                 (ensure-list-of-names "newline coding" name-or-names))))
+    `(let ((names ',names))
+       (register-newline-coding
+        names (%make-newline-coding
+               :names             names
+               :newline-sequence  ,newline-sequence
+               :read-newline-fun  ,read-newline-fun
+               :write-newline-fun ,write-newline-fun))
+       (first names))))
 
 
 ;;; EXTERNAL-FORMAT
@@ -715,7 +693,14 @@ Experimental."
   (write-n-bytes-fun            (missing-arg) :type function           :read-only t)
   (write-char-none-buffered-fun (missing-arg) :type function           :read-only t)
   (write-char-line-buffered-fun (missing-arg) :type function           :read-only t)
-  (write-char-full-buffered-fun (missing-arg) :type function           :read-only t))
+  (write-char-full-buffered-fun (missing-arg) :type function           :read-only t)
+  ;; Reading/writing C strings from/to stream.
+  (read-c-string-fun            (missing-arg) :type function           :read-only t)
+  (write-c-string-fun           (missing-arg) :type function           :read-only t)
+  ;; Conversion between strings and octet-vectors.
+  (octets-to-string-fun         (missing-arg) :type function           :read-only t)
+  (string-to-octets-fun         (missing-arg) :type function           :read-only t))
+(declaim (freeze-type external-format))
 
 (declaim (ftype (sfunction (external-format) cons) ef-names))
 (defun ef-names (external-format)
@@ -869,8 +854,15 @@ Experimental."
       (cc-write-char-line-buffered-fun character-coding))
      :write-char-full-buffered-fun
      (maybe-wrap-write-char-fun
-      (cc-write-char-full-buffered-fun character-coding)))))
+      (cc-write-char-full-buffered-fun character-coding))
+     ;; Conversion between strings and octet-vectors
+     :octets-to-string-fun (cc-octets-to-string-fun character-coding)
+     :string-to-octets-fun (cc-string-to-octets-fun character-coding)
+     ;;
+     :read-c-string-fun (cc-read-c-string-fun character-coding)
+     :write-c-string-fun (cc-write-c-string-fun character-coding))))
 
+;; TODO add replacements in external format wrappers
 (defun make-external-format/maybe-add-replacements
     (character-coding newline-coding replacement)
   (make-external-format
@@ -879,6 +871,7 @@ Experimental."
        character-coding)
    newline-coding))
 
+;; TODO get rid of this?
 (macrolet ((frob (accessor)
              (let ((ef-name (symbolicate 'ef- accessor))
                    (cc-name (symbolicate 'cc- accessor)))
@@ -886,13 +879,7 @@ Experimental."
                   (,cc-name (ef-character-coding external-format))))))
   (frob default-replacement-character)
 
-  (frob resync-fun)
-
-  (frob read-c-string-fun)
-  (frob write-c-string-fun)
-
-  (frob octets-to-string-fun)
-  (frob string-to-octets-fun))
+  (frob resync-fun))
 
 (defun variable-width-external-format-p (external-format)
   (and external-format
@@ -962,13 +949,94 @@ Experimental."
       ((cons keyword) ; TODO normalize newline-coding name
        (cons name (rest spec))))))
 
+(defun external-format-designator-to-key (designator
+                                          &key
+                                            (default-newline-coding :lf) ; TODO platform-specific
+                                            default-replacement)
+  (destructuring-bind (character-coding-name
+                       &key
+                       ((:newline-coding newline-coding-name) default-newline-coding)
+                       (replacement default-replacement))
+      (ensure-list designator)
+    (list character-coding-name newline-coding-name replacement)))
+
+;;; Keys are lists of the form
+;;;
+;;;   (CHARACTER-CODING-NAME NEWLINE-CODING-NAME REPLACEMENT)
+;;;
+;;; .
+(declaim (type hash-table **external-format-cache**))
+(define-load-time-global **external-format-cache**
+    (make-hash-table :test #'equal))
+
+(defun external-format-for-spec (spec)
+  (destructuring-bind (character-coding-name newline-coding-name replacement)
+      spec
+    (flet ((missing (&rest args)
+             (return-from external-format-for-spec args)))
+      (let ((character-coding (find-character-coding
+                               character-coding-name
+                               :if-does-not-exist #'missing))
+            (newline-coding (find-newline-coding
+                             newline-coding-name
+                             :if-does-not-exist #'missing)))
+        (values (lambda ()
+                  (make-external-format/maybe-add-replacements
+                   character-coding newline-coding replacement))
+                (list (cc-name character-coding)
+                      (nc-name newline-coding)
+                      replacement))))))
+
+;;; Try to find the external format designated by SPEC (which is the
+;;; result of calling EXTERNAL-FORMAT-DESIGNATOR-TO-KEY on a
+;;; designator) in **EXTERNAL-FORMAT-CACHE**.
+;;;
+;;; If there is no matching entry
+;;; 1. Make a suitable EXTERNAL-FORMAT instance or an error condition
+;;;    by calling EXTERNAL-FORMAT-FOR-SPEC
+;;; 2. Make a hash-table that is like the one stored in
+;;;    **EXTERNAL-FORMAT-CACHE** but additionally contains the result
+;;;    of 1.
+;;; 3. Atomically install that table as the value of
+;;;    **EXTERNAL-FORMAT-CACHE**
+;;;
+;;; Always return the EXTERNAL-FORMAT instance of error condition.
+(defun %find-external-format (spec)
+  (or (gethash spec **external-format-cache**)
+      (binding* (((external-format canonical-spec)
+                  (external-format-for-spec spec))
+                 (external-format
+                  (cond
+                    ((gethash canonical-spec **external-format-cache**))
+                    ((functionp external-format)
+                     (funcall external-format))
+                    (t
+                     external-format))))
+        (flet ((new-table (old-table)
+                 (let* ((test (hash-table-test old-table))
+                        (new-table (make-hash-table :test test)))
+                   (maphash (lambda (key value)
+                              (setf (gethash key new-table) value))
+                            old-table)
+                   (setf (gethash spec new-table) external-format)
+                   new-table)))
+          (loop for old-table = **external-format-cache**
+             for new-table = (new-table old-table)
+             until (eq old-table (cas **external-format-cache**
+                                      old-table new-table))))
+        external-format)))
+
 ;;; Defined in octets.lisp
 (declaim (ftype (function (character-coding t) (values character-coding &optional))
                 add-replacements-to-character-coding))
 
-(defun find-external-format (spec &key if-does-not-exist)
-  "Return the EXTERNAL-FORMAT structure designated by SPEC which can
-be of one of the following forms
+(declaim (ftype (sfunction (external-format-designator
+                            &key (:if-does-not-exist error-policy))
+                           (or null external-format))
+                find-external-format))
+(defun find-external-format (designator &key if-does-not-exist)
+  "Return the external format designated by DESIGNATOR which can be of
+one of the following forms
 
   KEYWORD ; TODO how about accepting strings and keywords here? that would make default external format detection less awkward
 
@@ -987,22 +1055,18 @@ NIL
 
 ERROR
 
-  TODO Signal an error."
-  (declare (type (or null function-name function) if-does-not-exist))
-  (destructuring-bind (character-coding-name
-                       &key
-                       ((:newline-coding newline-coding-name) :unix) ; TODO platform-specific
-                       replacement)
-      (ensure-list spec)
-    (let ((character-coding (find-character-coding
-                             character-coding-name
-                             :if-does-not-exist if-does-not-exist))
-          (newline-coding (find-newline-coding
-                           newline-coding-name
-                           :if-does-not-exist if-does-not-exist)))
-      (when (and character-coding newline-coding)
-        (make-external-format/maybe-add-replacements
-         character-coding newline-coding replacement)))))
+  TODO Signal an error.
+
+Experimental."
+  (let* ((key (external-format-designator-to-key designator))
+         (result (%find-external-format key)))
+    (cond
+      ((external-format-p result)
+       result)
+      ((typep if-does-not-exist '(and (not null) (or function-name function)))
+       (apply if-does-not-exist result))
+      (t
+       if-does-not-exist))))
 
 
 ;;; Default external format

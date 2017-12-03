@@ -208,7 +208,7 @@
 ;;; something valid as the :EXTERNAL-FORMAT argument to OPEN, LOAD,
 ;;; COMPILE-FILE and friends.
 (sb-xc:deftype external-format-designator ()
-  '(or keyword (cons keyword)))
+  '(or keyword (cons keyword list)))
 
 ;;; a thing that can be passed to FUNCALL & friends
 ;;;
