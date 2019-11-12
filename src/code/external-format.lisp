@@ -343,14 +343,15 @@ Experimental."
        (def-output-routines/variable-width (,format
                                             ,out-size-expr
                                             ,output-restart
-                                            ,names
+                                            ,names ; TODO just canonical-name?
                                             (:none character)
                                             (:line character)
                                             (:full character))
-         (if (eql byte #\Newline)
-             (setf (fd-stream-output-column stream) 0)
-             (setf (fd-stream-output-column stream)
-                   (+ (truly-the unsigned-byte (fd-stream-output-column stream)) 1)))
+         ;; FIXME We expect the newline coding to set the column to
+         ;; 0. But if the newline coding is the identity, it is
+         ;; bypassed, so the column does not get set.
+         (setf (fd-stream-output-column stream)
+               (+ (truly-the unsigned-byte (fd-stream-output-column stream)) 1))
          (let ((bits (char-code byte))
                (sap (buffer-sap obuf))
                (tail (buffer-tail obuf)))
@@ -716,19 +717,19 @@ Experimental."
   (flet ((maybe-wrap-bytes-for-char-fun (fun)
            (declare (type function fun))
            (let ((length (length (nc-newline-sequence newline-coding))))
-             (cond
-               ((= length 1)
-                fun)
-               (fun
-                (lambda (char)
-                  (if (eql char #\Newline)
-                      length
-                      (funcall fun char))))
-               (t
-                (lambda (char)
-                  (if (eql char #\Newline)
-                      length
-                      1))))))
+             (cond ((= length 1)
+                    fun)
+                   (fun
+                    (lambda (char)
+                      (if (eql char #\Newline)
+                          length
+                          (funcall fun char))))
+                   (t
+                    (lambda (char)
+                      (if (eql char #\Newline)
+                          length
+                          1))))))
+
          (maybe-wrap-read-char-fun (fun)
            (declare (type function fun))
            (let ((read-newline-fun (nc-read-newline-fun newline-coding)))
@@ -739,6 +740,7 @@ Experimental."
                      (:eof eof-value)
                      (:mismatch (funcall fun stream eof-error eof-value))))
                  fun)))
+
          (maybe-wrap-read-n-chars-fun (fun)
            (declare (type function fun))
            (let ((newline-sequence (nc-newline-sequence newline-coding)))
@@ -761,15 +763,14 @@ Experimental."
                            (end (+ start count)))
                       (declare (type index count))
                       (loop for previous = start then index
-                         for index = (search newline-sequence buffer
-                                             :start2 previous :end2 end)
-                         while index do
-                           (setf (aref buffer index)
-                                 #\Newline
-                                 (subseq buffer (+ index 1) (- end 1))
-                                 (subseq buffer (+ index 2) end))
-                           (incf index)
-                           (decf count))
+                            for index = (search newline-sequence buffer
+                                                :start2 previous :end2 end)
+                            while index
+                            do (setf (aref buffer index) #\Newline
+                                     (subseq buffer (+ index 1) (- end 1))
+                                     (subseq buffer (+ index 2) end))
+                               (incf index)
+                               (decf count))
                       count)))))))
 
          (maybe-wrap-write-n-bytes-fun (fun)
@@ -799,34 +800,33 @@ Experimental."
                                               (* newline-sequence-length newline-count)))
                                (new-buffer (make-vector-like buffer new-length)))
                           (loop for previous = start then (1+ index)
-                             for index = (position #\Newline buffer
-                                                   :start previous :end end)
-                             for previous* = 0 then index*
-                             for index* = (when index
-                                            (+ previous* (- index previous)))
-                             while index
-                             do (setf (subseq new-buffer previous* index*)
-                                      (subseq buffer previous index)
-                                      (subseq new-buffer index* (incf index* newline-sequence-length))
-                                      newline-sequence)
-                             finally (unless (eql previous end)
-                                       (setf (subseq new-buffer previous*)
-                                             (subseq buffer previous))))
+                                for index = (position #\Newline buffer
+                                                      :start previous :end end)
+                                for previous* = 0 then index*
+                                for index* = (when index
+                                               (+ previous* (- index previous)))
+                                while index
+                                do (setf (subseq new-buffer previous* index*)
+                                         (subseq buffer previous index)
+                                         (subseq new-buffer index* (incf index* newline-sequence-length))
+                                         newline-sequence)
+                                finally (unless (eql previous end)
+                                          (setf (subseq new-buffer previous*)
+                                                (subseq buffer previous))))
                           (funcall fun stream new-buffer flush-p 0 new-length))
                         (funcall fun stream buffer flush-p start end))))))))
 
          (maybe-wrap-write-char-fun (fun)
            (declare (type function fun))
            (let ((write-newline-fun (nc-write-newline-fun newline-coding)))
-             (if write-newline-fun
+             (if t ;; FIXME should only happen for non-NIL write-newline-fun, but
+                   ;; WRITE-NEWLINE-FUN resets the stream column so we can't bypass it
                  (lambda (stream char)
                    (declare (type stream stream)
                             (type character char))
-                   (cond
-                     ((char= char #\Newline)
-                      (funcall write-newline-fun stream))
-                     (t
-                      (funcall fun stream char))))
+                   (if (char= char #\Newline)
+                       (funcall write-newline-fun stream)
+                       (funcall fun stream char)))
                  fun))))
     (%make-external-format
      :character-coding character-coding
@@ -1060,13 +1060,12 @@ ERROR
 Experimental."
   (let* ((key (external-format-designator-to-key designator))
          (result (%find-external-format key)))
-    (cond
-      ((external-format-p result)
-       result)
-      ((typep if-does-not-exist '(and (not null) (or function-name function)))
-       (apply if-does-not-exist result))
-      (t
-       if-does-not-exist))))
+    (cond ((external-format-p result)
+           result)
+          ((typep if-does-not-exist '(and (not null) (or function-name function)))
+           (apply if-does-not-exist result))
+          (t
+           if-does-not-exist))))
 
 
 ;;; Default external format

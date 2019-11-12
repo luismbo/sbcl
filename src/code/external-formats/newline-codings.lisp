@@ -132,27 +132,33 @@
 (defmacro define-newline-coding/newline-sequence (name-or-names
                                                   &key
                                                   (newline-sequence (missing-arg))
-                                                    decode-in-string-fun)
+                                                  decode-in-string-fun)
   (declare (ignore decode-in-string-fun))
   (let ((trivialp (equal newline-sequence '(#x0a))))
     (flet ((make-read-newline-fun ()
              `(lambda (stream eof-error)
-                (declare (type stream stream)) ; TODO fd-stream?
+                (declare (type fd-stream stream))
                 ,(make-newline-reader newline-sequence)))
            (make-write-newline-fun ()
-             `(lambda (write-byte-fun stream)
-                (declare (type function write-byte-fun)
-                         (type stream stream)) ; TODO fd-stream?
-                (setf (fd-stream-output-column stream) 0)
-                ,@(mapcar (lambda (byte) ; TODO write whole sequence at once
-                            `(funcall write-byte-fun stream ,byte))
-                          newline-sequence))))
+             (let* ((length (length newline-sequence))
+                    (reffer (ecase length
+                              (1 'sap-ref-8)
+                              (2 'sap-ref-16)))
+                    (value  (loop for byte in (reverse newline-sequence)
+                                  for result = byte then (logior (ash result 8)
+                                                                 byte)
+                                  finally (return result))))
+               `(lambda (stream)
+                  (declare (type fd-stream stream))
+                  (setf (fd-stream-output-column stream) 0)
+                  (output-wrapper (stream ,length (:none) nil)
+                    (setf (,reffer (buffer-sap obuf) tail) ,value))))))
       `(define-newline-coding
          ,name-or-names
          :newline-sequence  (map 'string #'code-char ',newline-sequence) ; TODO unused?
          :read-newline-fun  ,(unless trivialp
                                (make-read-newline-fun))
-         :write-newline-fun ,(unless trivialp
+         :write-newline-fun ,(unless nil ; trivialp FIXME can't optimize trivial case because stream's column must be reset by the write newline function
                                (make-write-newline-fun))))))
 
 
