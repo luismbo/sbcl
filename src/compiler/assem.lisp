@@ -263,45 +263,97 @@
   (setf *next-inst-id* 0))
 ;;;
 
-;;; Instructions are streamed into a SECTION before (optionally combining
+;;; Instructions are streamed into a section before (optionally combining
 ;;; sections and) assembling into a SEGMENT.
-;;; The SECTION representation is just a list: (INDEX . BUFFERS).
-;;; Each BUFFER is a simple-vector.
-;;; Because the elsewhere section and unboxed data section often hold nothing,
-;;; we start with an empty vector to avoid waste.
-(defun make-section () (list 0 #()))
-(defmacro section-buf-chain (section) `(cdr ,section))
-(defmacro section-buf-index (section) `(car ,section))
-(defmacro section-last-buf (section) `(cadr ,section))
+(defstruct (stmt (:constructor make-stmt (labels vop mnemonic operands)))
+  (labels)
+  (vop)
+  (mnemonic)
+  (operands)
+  (prev)
+  (next))
+(declaim (freeze-type stmt))
+(defmethod print-object ((stmt stmt) stream)
+  (print-unreadable-object (stmt stream :type t :identity t)
+    (awhen (stmt-labels stmt)
+      (princ it stream)
+      (write-char #\space stream))
+    (princ (stmt-mnemonic stmt) stream)))
+
+;;; A section is just a doubly-linked list of statements with a head and
+;;; tail pointer to allow insertion anywhere,
+;;; and a dummy head node to avoid special-casing an empty section.
+(defun make-section ()
+  (let ((first (make-stmt nil nil :ignore nil)))
+    (cons first first)))
+(defun section-head (section) (car section))
+(defun section-tail (section) (cdr section))
+
+(defun print-section-contents (section)
+  (do ((statement (section-head section) (stmt-next statement))
+       (i 0))
+      ((null statement))
+    (let ((*print-pretty* nil))
+      (format t "~d: ~@[~a: ~]~a~{ ~a~}~%"
+              i
+              (stmt-labels statement)
+              (stmt-mnemonic statement)
+              (stmt-operands statement)))
+    (incf i)))
+
+;;; Insert STMT after PREDECESSOR.
+(defun insert-stmt (stmt predecessor)
+  (let ((successor (stmt-next predecessor)))
+    (setf (stmt-next predecessor) stmt
+          (stmt-prev stmt) predecessor
+          (stmt-next stmt) successor)
+    (when successor
+      (stmt-prev successor) stmt))
+  stmt)
+
+(defun delete-stmt (stmt)
+  (let ((prev (stmt-prev stmt))
+        (next (stmt-next stmt)))
+    (aver prev)
+    (setf (stmt-next prev) next)
+    (when next
+      (setf (stmt-prev next) prev))))
+
+(defun add-stmt-labels (statement more-labels)
+  (let ((list (nconc (ensure-list (stmt-labels statement))
+                     (ensure-list more-labels))))
+    (setf (stmt-labels statement)
+          (if (singleton-p list) (car list) list))))
+
+;;; This is used only to keep track of which vops emit which insts.
+(defvar **current-vop**)
+
 (defun emit (section &rest things)
   ;; each element of THINGS can be:
-  ;; - a list (symbol . args) for a machine instruction or assembler directive
   ;; - a label
+  ;; - a list (mnemonic . operands) for a machine instruction or assembler directive
   ;; - a function to emit a postit
-  (dolist (thing things section)
-    (let ((vector (the simple-vector (section-last-buf section)))
-          (index (section-buf-index section)))
-      (unless (< index (length vector))
-        ;; We double the size, but rather than copying the old data into the new,
-        ;; just grow the chain of vectors. No need to materialize a single vector.
-        (let ((new-vector (make-array (max 10 (* (length vector) 2)))))
-          (if (= (length vector) 0)
-              (rplaca (cdr section) new-vector)
-              (push new-vector (cdr section)))
-          (setq vector new-vector
-                index 0)))
-      (unless (typep thing '(or function label))
-        (let ((inst thing))
-          (let ((vop (car inst)))
-            (when (sb-c::vop-p vop) (pop inst)))
-          (unless (member (car inst) '(.align .byte .skip .coverage-mark))
-            (dolist (operand (cdr inst))
-              (if (label-p operand)
-                  (setf (label-usedp operand) t)
-                  ;; backend decides what labels are used
-                  (%mark-used-labels operand))))))
-      (setf (aref vector index) thing)
-      (setf (section-buf-index section) (1+ index)))))
+  (let ((last (section-tail section))
+        (vop (if (boundp '**current-vop**) **current-vop**)))
+    (dolist (thing things (rplacd section last))
+      (if (label-p thing) ; Accumulate multiple labels until the next instruction
+          (if (stmt-mnemonic last)
+              (setq last (insert-stmt (make-stmt thing vop nil nil) last))
+              (let ((old (stmt-labels last)) (new (list thing)))
+                (setf (stmt-labels last)
+                      (if (label-p old) (cons old new) (nconc old new)))))
+          (multiple-value-bind (mnemonic operands)
+              (if (consp thing) (values (car thing) (cdr thing)) thing)
+            (unless (member mnemonic '(.align .byte .skip .coverage-mark))
+              (dolist (operand operands)
+                (if (label-p operand)
+                    (setf (label-usedp operand) t)
+                    ;; backend decides what labels are used
+                    (%mark-used-labels operand))))
+            (if (stmt-mnemonic last)
+                (setq last (insert-stmt (make-stmt nil vop mnemonic operands) last))
+                (setf (stmt-mnemonic last) mnemonic
+                      (stmt-operands last) operands)))))))
 
 #-(or x86-64 x86)
 (defun %mark-used-labels (operand) ; default implementation
@@ -325,9 +377,6 @@
 ;;; This holds either the current section (if writing symbolic assembly)
 ;;; or current segment (if machine-encoding). Use ASSEMBLE to change it.
 (defvar *current-destination*)
-;;; Just like *CURRENT-DESTINATION* except this holds the current vop.
-;;; This is used only to keep track of which vops emit which insts.
-(defvar **current-vop**)
 
 (defmacro assemble ((&optional dest vop &key labels) &body body
                     &environment env)
@@ -1267,46 +1316,48 @@
 
 
 ;;;; interface to the rest of the compiler
-(defun op-encoder-name (string-designator &optional create)
-  (cond ((string= string-designator '.skip)
-         (return-from op-encoder-name '.skip))
-        ;; other pseudo-ops?
-        )
-  (let ((conflictp
-         ;; This kludge avoids interning instruction encoder names in lowercase
-         ;; most of the time, which was a hack to avoid overlap with Lisp macros
-         ;; of the same name.
-         (member string-designator
-                 '("ASR" "LSR" "LSL" "ROR"                     ; ARM
-                   "T"                                         ; Sparc "trap"
-                   "AND" "OR" "NOT" "PUSH" "POP" "SET" "LOOP"  ; x86
-                   "LDB"                                       ; HPPA
-                   "REM"                                       ; RISC-V
-                   "BREAK" "BYTE" "CALL" "WORD" "MOVE")        ; generic
-                 :test #'string=)))
-    (values (funcall (if create 'intern 'find-symbol)
-                     (if conflictp
-                         (string-downcase string-designator)
-                         (string string-designator))
-                     *backend-instruction-set-package*))))
+(defun dump-symbolic-asm (statements stream &aux last-vop)
+  (format stream "~3&Assembler input:~%")
+  (do ((statement (stmt-next statements) (stmt-next statements)))
+      ((null statement))
+    (unless (functionp (stmt-mnemonic statement))
+      (binding* ((vop (stmt-vop statement) :exit-if-null))
+        (unless (eq vop last-vop)
+          (format stream "# ~A~%"
+                  (sb-c::vop-info-name (sb-c::vop-info vop))))
+        (setq last-vop vop))
+      (awhen (stmt-labels statement)
+        (format stream "~{~A: ~}~%" (ensure-list it)))
+      (let ((*print-pretty* nil))
+        (format stream "    ~:@(~A~) ~{~A~^, ~}~%"
+                (stmt-mnemonic statement)
+                (stmt-operands statement)))))
+  (format stream "# end of input~%"))
 
-;;; Append all buffer chains of all sections, placing them in forward order.
-(defun combine-sections (sections)
-  (let ((first (car sections)))
-    ;; There shouldn't be much consing due to this REVAPPEND. We're not
-    ;; reversing the contents of the buffers, just the buffer chain itself.
-    (revappend (let ((last-buffer-len (section-buf-index first))
-                     (more-buffers (cddr first)))
-                 (if (eql last-buffer-len 0)
-                     more-buffers ; Exclude empty buffer
-                     (cons (subseq (section-last-buf first) 0 last-buffer-len)
-                           more-buffers)))
-               (awhen (rest sections) (combine-sections it)))))
+;;; Append all sections, returning the first section.
+(defun append-sections (sections)
+  (let* ((first-section (car sections))
+         (last-stmt (section-tail first-section)))
+    (dolist (section (cdr sections) first-section)
+      (let ((head (section-head section)))
+        (aver (eq (stmt-mnemonic head) :ignore))
+        (when (stmt-next head)
+          (setf (stmt-next last-stmt) (stmt-next head)
+                (stmt-prev (stmt-next head)) last-stmt)
+          (setf last-stmt (section-tail section)))
+        ;; Make this section empty since its contents
+        ;; are already accounted for.
+        (setf (stmt-next head) nil)))
+    (rplacd first-section last-stmt)))
+
+;;; Map of opcode symbol to function that emits it into the byte stream
+;;; (or with the schedulding assembler, into the queue)
+(defglobal *inst-encoder* (make-hash-table :test 'eq))
 
 ;;; Combine INPUTS into one assembly stream and assemble into SEGMENT
 (defun %assemble-sections (segment &rest inputs)
   (let ((**current-vop** nil)
-        (sections (combine-sections inputs))
+        (section (append-sections inputs))
         (in-without-scheduling)
         (was-scheduling))
     ;; HEADER-SKEW is 1 word (in bytes) if the boxed code header word count is odd.
@@ -1326,52 +1377,40 @@
     (%emit-label segment nil (segment-origin segment))
     #+sb-dyncount
     (setf (segment-collect-dynamic-statistics segment) *collect-dynamic-statistics*)
-    (dolist (buffer sections)
-      (dovector (operation buffer)
-        (etypecase operation
-          (cons
-           (let ((first (car operation)))
-             (when (sb-c::vop-p first)
-               (setq **current-vop** first)
-               (pop operation)))
-           (block op
-             (let ((mnemonic (the symbol (car operation)))
-                   (operands (cdr operation)))
-               (when (char= (char (symbol-name mnemonic) 0) #\.)
-                 ;; potentially a pseudo-op. Any mnemonic can start with a dot,
-                 ;; not just the ones handled here by the generic assembler.
-                 (case mnemonic
-                   (.align
-                    (destructuring-bind (bits &optional (pattern 0)) operands
-                      (%emit-alignment segment **current-vop** bits pattern))
-                    (return-from op))
-                   (.byte ; takes >1 byte, unlike inst BYTE which takes only 1
-                    (dolist (byte operands (return-from op))
-                      (emit-byte segment byte)))
-                   (.skip
-                    (destructuring-bind (n-bytes &optional (pattern 0)) operands
-                      (%emit-skip segment n-bytes pattern))
-                    (return-from op))
-                   (.begin-without-scheduling
-                    (aver (not in-without-scheduling))
-                    (setq in-without-scheduling t
-                          was-scheduling (segment-run-scheduler segment))
-                    (when was-scheduling
-                      (schedule-pending-instructions segment)
-                      (setf (segment-run-scheduler segment) nil))
-                    (return-from op))
-                   (.end-without-scheduling
-                    (aver in-without-scheduling)
-                    (setf (segment-run-scheduler segment) was-scheduling
-                          in-without-scheduling nil
-                          was-scheduling nil)
-                    (return-from op))
-                   (.comment ; ignore it
-                    (return-from op))))
-               (instruction-hooks segment)
-               (apply mnemonic segment (perform-operand-lowering operands)))))
-          (label (%emit-label segment **current-vop** operation))
-          (function (%emit-postit segment operation))))))
+    (when (and sb-c::*compiler-trace-output*
+               (memq :symbolic-asm sb-c::*compile-trace-targets*))
+      (dump-symbolic-asm section sb-c::*compiler-trace-output*))
+    (do ((statement (stmt-next (section-head section)) (stmt-next statement)))
+        ((null statement))
+      (awhen (stmt-vop statement) (setq **current-vop** it))
+      (dolist (label (ensure-list (stmt-labels statement)))
+        (%emit-label segment **current-vop** label))
+      (let ((mnemonic (stmt-mnemonic statement))
+            (operands (stmt-operands statement)))
+        (if (functionp mnemonic)
+            (%emit-postit segment mnemonic)
+            (case mnemonic
+              (.begin-without-scheduling
+               (aver (not in-without-scheduling))
+               (setq in-without-scheduling t
+                     was-scheduling (segment-run-scheduler segment))
+               (when was-scheduling
+                 (schedule-pending-instructions segment)
+                 (setf (segment-run-scheduler segment) nil)))
+              (.end-without-scheduling
+               (aver in-without-scheduling)
+               (setf (segment-run-scheduler segment) was-scheduling
+                     in-without-scheduling nil
+                     was-scheduling nil))
+               ((nil)) ; ignore
+               (t
+                (let ((encoder (gethash mnemonic *inst-encoder*)))
+                  (cond ((functionp encoder)
+                         (instruction-hooks segment)
+                         (apply encoder segment
+                                (perform-operand-lowering operands)))
+                        (t
+                         (bug "No encoder for ~S" mnemonic))))))))))
   (finalize-segment segment))
 
 ;;; The interface to %ASSEMBLE-SECTIONS
@@ -1416,6 +1455,12 @@
         ;; Total size of the code object must be multiple of 2 lispwords
         (aver (not (logtest (+ (segment-header-skew segment) index)
                             sb-vm:lowtag-mask)))
+        ;; TODO: as the comment in GENERATE-CODE suggests, we would like to align
+        ;; code objects to 16 bytes for 32-bit x86. That's simple - all we have to do
+        ;; is ensure that each code blob is a multiple of 16 bytes in size.
+        ;; Since code can only go on pages reserved for code, there will be no smaller
+        ;; object on the same page to cause misalignment.
+        ;; Extra padding can be inserted before the trailing simple-fun table.
         (let ((padding (if (eql n-entries 0)
                            0
                            (- index trailer-len (label-position end-text)))))
@@ -1451,42 +1496,6 @@
 #-x86-64
 (defun perform-operand-lowering (operands) operands)
 
-(defun truncate-section-to-length (section)
-  (setf (section-last-buf section)
-        (subseq (section-last-buf section) 0 (section-buf-index section))))
-
-;;; Tack SECOND on to the end of FIRST, and reset SECOND to be empty.
-;;; Typically for appending the elsewhere section to the regular section.
-(defun join-sections (first second)
-  ;; Truncate the first section's last buffer to its in-use length
-  (truncate-section-to-length first)
-  ;; Extend FIRST's chain of buffers with those in SECOND
-  (setf (section-buf-chain first) (nconc (section-buf-chain second)
-                                         (section-buf-chain first)))
-  ;; Set the in-use length of the buffer that is now the final buffer
-  ;; in FIRST's chain of buffers with the in-use length from SECOND.
-  (setf (section-buf-index first) (section-buf-index second))
-  ;; Clear out SECOND
-  (setf (section-buf-chain second) (list #())
-        (section-buf-index second) 0))
-
-;;; Produce a unified vector of the section contents.
-;;; Might be useful for something, but not at present.
-(defun section-contents (section)
-  (let* ((last-buffer-length (section-buf-index section))
-         (chain (section-buf-chain section))
-         (total-length (+ last-buffer-length
-                          ;; all but the last must be completely full
-                          (reduce #'+ (cdr chain) :key #'length)))
-         (contents (make-array total-length))
-         (start total-length))
-    (decf start last-buffer-length)
-    (replace contents (car chain) :start1 start)
-    (dolist (buf (cdr chain) contents)
-      (setq last-buffer-length (length buf))
-      (decf start last-buffer-length)
-      (replace contents buf :start1 start))))
-
 (defun trace-inst (section mnemonic operands)
   (when sb-c::*compiler-trace-output*
     (let* ((asmstream *asmstream*)
@@ -1497,19 +1506,32 @@
       (sb-c::trace-instruction section-name **current-vop** mnemonic operands
                                (asmstream-tracing-state asmstream)))))
 
-(defmacro inst (&whole whole instruction &rest args &environment env)
+(defmacro inst (&whole whole mnemonic &rest args)
   "Emit the specified instruction to the current segment."
-  (let* ((stringablep (typep instruction '(or symbol string character)))
-         (sym (and stringablep (op-encoder-name instruction))))
-    (cond ((and stringablep
-                (null sym))
-           (warn "Undefined instruction: ~s in~% ~s" instruction whole)
-           `(error "Undefined instruction: ~s in~% ~s" ',instruction ',whole))
-          ((#-sb-xc macro-function #+sb-xc sb-xc:macro-function sym env)
-           `(,sym ,@args))
+  ;;; The test for stringablep is a bit suspicious - if you use a lexical var X
+  ;;; as a computed mnemonic, it should be spelled (INST (PROGN X) ...) I suppose.
+  (let* ((stringablep (typep mnemonic '(or symbol string character)))
+         (sym (and stringablep
+                   (find-symbol (string mnemonic) *backend-instruction-set-package*)))
+         (definedp (nth-value 1 (gethash sym *inst-encoder*))))
+    (cond ((and stringablep (not definedp))
+           ;; %INST can not execute random forms, so MNEMONIC must be a literal to be
+           ;; recognized as a macro instruction. It's basically a lisp macro that can
+           ;; coexist with other identically-named lisp macros or functions.
+           ;; For example, arm64 has {ASR, LSR} as DEFUNs and macro instructions.
+           ;; By using an unusual convention of a symbol with #\: in its name,
+           ;; FIND-SYMBOL reliably tests whether a macro is defined without further
+           ;; using FBOUNDP or MACRO-FUNCTION.
+           (let ((macro (find-symbol (format nil "M:~A" mnemonic)
+                                     *backend-instruction-set-package*)))
+             (when macro
+               (return-from inst `(,macro ,@args))))
+           (warn "Undefined instruction: ~s in~% ~s" mnemonic whole)
+           `(error "Undefined instruction: ~s in~% ~s" ',mnemonic ',whole))
           (t
-           `(%inst ,(if stringablep `',sym `(op-encoder-name ,instruction))
-                   ,@args)))))
+           ;; x86-64 uses computed mnemonics in RAW-INSTANCE-INIT/COMPLEX-DOUBLE
+           ;; and EMIT-SAP-REF.
+           `(%inst ,(if sym `',sym mnemonic) ,@args)))))
 
 ;;; Place INST in the current assembly section (or sometimes SEGMENT)
 ;;; based on *CURRENT-DESTINATION*. The latter occurs in two scenarios:
@@ -1524,18 +1546,21 @@
 ;;;
 (defun %inst (mnemonic &rest operands)
   (declare (symbol mnemonic))
-  (let ((dest *current-destination*))
+  (let ((action (gethash mnemonic *inst-encoder*))
+        (dest *current-destination*))
+    (unless action ; try canonicalizing again
+      (setq mnemonic (find-symbol (string mnemonic)
+                                  *backend-instruction-set-package*)
+            action (gethash mnemonic *inst-encoder*))
+      (aver action))
     (typecase dest
       (cons ; streaming in to the assembler
        (trace-inst dest mnemonic operands)
-       (let ((v **current-vop**)
-             (inst `(,mnemonic . ,operands)))
-         (aver (typep v '(or null sb-c::vop)))
-         (emit dest (if v (cons v inst) inst))))
+       (emit dest (cons mnemonic operands)))
       (segment ; streaming out of the assembler
        (instruction-hooks dest)
-       (apply mnemonic dest (perform-operand-lowering operands)))))
-  (values))
+       (apply action dest (perform-operand-lowering operands)))))
+  mnemonic)
 
 (defun emit-label (label)
   "Emit LABEL at this location in the current section."
@@ -1700,9 +1725,12 @@
                (:big-endian forms))
            ',name)))))
 
+(defun %def-inst-encoder (symbol &optional thing)
+  (setf (gethash symbol *inst-encoder*)
+        (or thing (gethash symbol *inst-encoder*))))
+
 (defmacro define-instruction (name lambda-list &rest options)
-  (binding* ((sym-name (symbol-name name))
-             (defun-name (op-encoder-name sym-name t))
+  (binding* ((fun-name (intern (symbol-name name) *backend-instruction-set-package*))
              (segment-name (car lambda-list))
              (vop-name nil)
              (emitter nil)
@@ -1772,7 +1800,8 @@
                   `((when (segment-run-scheduler ,segment-name)
                       (schedule-pending-instructions ,segment-name))
                     ,@emitter))
-            (let ((flet-name (make-symbol (concatenate 'string "ENCODE-" sym-name)))
+            (let ((flet-name (make-symbol (concatenate 'string "ENCODE-"
+                                                       (string fun-name))))
                   (inst-name '#:inst))
               (setf emitter `((flet ((,flet-name (,segment-name)
                                        ,@emitter))
@@ -1793,13 +1822,18 @@
                                     (,flet-name ,segment-name)))))))))
     `(progn
        #-sb-xc-host ; The disassembler is not used on the host.
-       (setf (get ',defun-name 'sb-disassem::instruction-flavors)
+       (setf (get ',fun-name 'sb-disassem::instruction-flavors)
              (list ,@pdefs))
-       ,(when emitter
-          `(defun ,defun-name (,segment-name ,@(cdr lambda-list))
-             (declare ,@decls)
-             (let ,(and vop-name `((,vop-name **current-vop**)))
-               ,@emitter))))))
+       ,@(when emitter
+           `((eval-when (:compile-toplevel) (%def-inst-encoder ',fun-name))
+             (%def-inst-encoder
+              ',fun-name
+              (named-lambda ,(string fun-name)
+                  (,segment-name ,@(cdr lambda-list))
+                (declare ,@decls)
+                (let ,(and vop-name `((,vop-name **current-vop**)))
+                  ,@emitter)))))
+       ',fun-name)))
 
 (defun instruction-hooks (segment)
   (let ((postits (segment-postits segment)))
@@ -1807,5 +1841,37 @@
     (dolist (postit postits)
       (emit-back-patch segment 0 postit))))
 
+;;; This was convenient as merely a shorthand for DEFMACRO, but it can't be now
+;;; because for example, "NOT" on the Alpha is a macro, conflicting with CL:NOT.
+;;; git revision 8d21b520d9 seems to imply that using MAKE-MACRO-LAMBDA to create
+;;; anonymous macros somehow failed.
 (defmacro define-instruction-macro (name lambda-list &body body)
-  `(defmacro ,(op-encoder-name name t) ,lambda-list ,@body))
+  (let ((macro (package-symbolicate
+                *backend-instruction-set-package* "M:" name)))
+    `(progn
+       ;; Ensure that it does not exist as a directly encodable instruction
+       (remhash ',(find-symbol (string name) *backend-instruction-set-package*)
+                *inst-encoder*)
+       (defmacro ,macro ,lambda-list ,@body))))
+
+(%def-inst-encoder '.align
+                   (lambda (segment bits &optional (pattern 0))
+                     (%emit-alignment segment **current-vop** bits pattern)))
+(%def-inst-encoder '.byte
+                   (lambda (segment &rest bytes)
+                     (dolist (byte bytes) (emit-byte segment byte))))
+(%def-inst-encoder '.coverage-mark
+                   (lambda (segment &rest junk)
+                     (declare (ignore segment junk))
+                     (error "Can't get here")))
+(%def-inst-encoder '.skip
+                    (lambda (segment n-bytes &optional (pattern 0))
+                      (%emit-skip segment n-bytes pattern)))
+(%def-inst-encoder '.lispword
+                   (lambda (segment val)
+                     #+little-endian
+                     (loop for i below sb-vm:n-word-bits by 8
+                           do (emit-byte segment (ldb (byte 8 i) val)))
+                     #+big-endian
+                     (loop for i from (- sb-vm:n-word-bits 8) downto 0 by 8
+                           do (emit-byte segment (ldb (byte 8 i) val)))))

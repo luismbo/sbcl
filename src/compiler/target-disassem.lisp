@@ -366,8 +366,7 @@
            (ignore chunk)
            (type (or null stream) stream)
            (type disassem-state dstate))
-  (when (and (aligned-p (+ (seg-virtual-location (dstate-segment dstate))
-                           (dstate-cur-offs dstate))
+  (when (and (aligned-p (dstate-cur-addr dstate)
                         (* 2 sb-vm:n-word-bytes))
              ;; Check type.
              (= (sap-ref-8 (dstate-segment-sap dstate)
@@ -420,9 +419,7 @@
            (ignore chunk)
            (type (or null stream) stream)
            (type disassem-state dstate))
-  (let ((location
-         (+ (seg-virtual-location (dstate-segment dstate))
-            (dstate-cur-offs dstate)))
+  (let ((location (dstate-cur-addr dstate))
         (alignment (dstate-alignment dstate)))
     (unless (aligned-p location alignment)
       (when stream
@@ -737,6 +734,15 @@
   ;; add labels at the beginning with a label-number of nil; we'll notice
   ;; later and fill them in (and sort them)
   (declare (type disassem-state dstate))
+  ;; Holy cow, is this flaky. The problem is that labels are computed as absolute
+  ;; addresses, yet GC is (in theory) able to relocate the code while disassembling.
+  ;; The labels wouldn't make sense if that happens.
+  ;; I'm disinclined to revise all of the backends to compute labels relative to
+  ;; code-instructions. Probably we shouldn't try to support code movement while
+  ;; disassembling, it's just not worth the headache.
+  ;; However, a potential fix might be to pin the code while scanning it for
+  ;; labels, then relativize all labels to the segment base.
+  ;; When disassembling arbitrary memory, relativization would be skipped.
   (let ((labels (dstate-labels dstate)))
     (map-segment-instructions
      (lambda (chunk inst)
@@ -776,9 +782,19 @@
                  (push (cons adjusted-value nil) labels)))))
      segment
      dstate)
-    (setf (dstate-labels dstate) labels)
     ;; erase any notes that got there by accident
-    (setf (dstate-notes dstate) nil)))
+    (setf (dstate-notes dstate) nil)
+    ;; add labels from code header jump tables. As noted above,
+    ;; this is buggy if code moves, but no worse than anything else.
+    ;; CODE-JUMP-TABLE-WORDS = 0 if the architecture doesn't have jump tables.
+    (binding* ((code (seg-code segment) :exit-if-null))
+      (with-pinned-objects (code)
+        (loop with insts = (code-instructions code)
+              for i from 1 below (code-jump-table-words code)
+              do (pushnew (cons (sap-ref-word insts (ash i sb-vm:word-shift)) nil)
+                          labels :key #'car))))
+    ;; Return the new list
+    (setf (dstate-labels dstate) labels)))
 
 ;;; If any labels in DSTATE have been added since the last call to
 ;;; this function, give them label-numbers, enter them in the
@@ -887,9 +903,7 @@
 (defun print-current-address (stream dstate)
   (declare (type stream stream)
            (type disassem-state dstate))
-  (let* ((location
-          (+ (seg-virtual-location (dstate-segment dstate))
-             (dstate-cur-offs dstate)))
+  (let* ((location (dstate-cur-addr dstate))
          (location-column-width *disassem-location-column-width*)
          (plen ; the number of rightmost hex chars of this address to print
           (or (dstate-addr-print-len dstate)
@@ -1564,6 +1578,11 @@
   (setf (dstate-labels dstate)
         (remove-if (lambda (lab)
                      (not
+                      ;; Ok, this is bogus when you want to show the code
+                      ;; as if the origin were 0 (perhaps to compare
+                      ;; two disssemblies that should be the same).
+                      ;; Maybe that's a another good reason to store
+                      ;; labels as relativized.
                       (some (lambda (seg)
                               (let ((start (seg-virtual-location seg)))
                                 (<= start
@@ -1751,8 +1770,24 @@
               (get-code-segments code-component))))
     (when use-labels
       (label-segments segments dstate))
-    (disassemble-segments segments stream dstate)))
+    (disassemble-segments segments stream dstate)
+    (let ((n (code-jump-table-words code-component)))
+      (when (> n 1)
+        (format stream "; Jump table~%")
+        (let ((sap (code-instructions code-component)))
+          (dotimes (i (1- n))
+            (let ((a (sap-ref-word sap (ash (1+ i) sb-vm:word-shift))))
+              (format stream "; ~vt~v,'02x = ~a~%"
+                      (+ label-column-width
+                         (dstate-addr-print-len dstate)
+                         3) ; i don't know what 3 means
+                      (* 2 sb-vm:n-word-bytes)
+                      a
+                      (gethash a (dstate-label-hash dstate))))))))))
 
+;;; This convenience function has two syntaxes depending on what OBJECT is:
+;;;   (DIS OBJ &optional STREAM)
+;;;   (DIS ADDR|SAP LENGTH &optional STREAM)
 (defun sb-c:dis (object &optional length (stream *standard-output* streamp))
   (typecase object
    ((or address system-area-pointer)
@@ -1760,11 +1795,14 @@
     (disassemble-memory object length :stream stream))
    (t
     (aver (not streamp))
-    (when (and (symbolp object) (special-operator-p object))
-      ;; What could it do- disassemble the interpreter?
-      (error "Can't disassemble a special operator"))
-    (dolist (fun (get-compiled-funs object))
-      (disassemble-code-component fun :stream (or length stream))))))
+    (when length
+      (setq stream length))
+    (dolist (thing (cond ((code-component-p object) (list object))
+                         ((and (symbolp object) (special-operator-p object))
+                          ;; What could it do- disassemble the interpreter?
+                          (error "Can't disassemble a special operator"))
+                         (t (get-compiled-funs object))))
+      (disassemble-code-component thing :stream stream)))))
 
 ;;;; code to disassemble assembler segments
 
@@ -1879,17 +1917,20 @@
 
 (defun sap-ref-int (sap offset length byte-order)
   (declare (type system-area-pointer sap)
+           (fixnum offset)
            (type (member 1 2 4 8) length)
            (type (member :little-endian :big-endian) byte-order))
   (if (or (eq length 1)
           (and (eq byte-order #+big-endian :big-endian #+little-endian :little-endian)
                #-(or arm arm64 ppc ppc64 x86 x86-64) ; unaligned loads are ok for these
                (not (logtest (1- length) (sap-int (sap+ sap offset))))))
-      (case length
-        (8 (sap-ref-64 sap offset))
-        (4 (sap-ref-32 sap offset))
-        (2 (sap-ref-16 sap offset))
-        (1 (sap-ref-8 sap offset)))
+      (locally
+       (declare (optimize (safety 0))) ; disregard shadow memory for msan
+       (case length
+         (8 (sap-ref-64 sap offset))
+         (4 (sap-ref-32 sap offset))
+         (2 (sap-ref-16 sap offset))
+         (1 (sap-ref-8 sap offset))))
       (binding* (((offset increment)
                   (cond ((eq byte-order :big-endian) (values offset +1))
                         (t (values (+ offset (1- length)) -1))))
@@ -1926,6 +1967,18 @@
   (if (self-evaluating-p thing)
       (prin1-short thing stream)
       (prin1-short `',thing stream)))
+
+(defun tab (column stream)
+  (when stream
+    (funcall (formatter "~V,1t") stream column))
+  nil)
+(defun tab0 (column stream)
+  (funcall (formatter "~V,0t") stream column)
+  nil)
+
+(defun princ16 (value stream)
+  (when stream
+    (write value :stream stream :radix t :base 16 :escape nil)))
 
 ;;; Store a note about the lisp constant at LOCATION in the code object
 ;;; being disassembled, to be printed as an end-of-line comment.
@@ -2133,25 +2186,26 @@
 ;;;   1) a SYSTEM-AREA-POINTER
 ;;;   2) a BYTE-OFFSET from the SAP to begin at
 ;;; It should read information from the SAP starting at BYTE-OFFSET, and
-;;; return four values:
+;;; return five values:
 ;;;   1) the error number
 ;;;   2) the total length, in bytes, of the information
 ;;;   3) a list of SC-OFFSETs of the locations of the error parameters
 ;;;   4) a list of the length (as read from the SAP), in bytes, of each
 ;;;      of the return values.
+;;;   5) a boolean indicating whether to disassemble 1 byte prior to
+;;;      decoding the SC+OFFSETs.  (This byte is literally the byte in
+;;;      memory, which is distinct from the 'error number')
 (defun handle-break-args (error-parse-fun trap-number stream dstate)
   (declare (type function error-parse-fun)
            (type (or null stream) stream)
            (type disassem-state dstate))
-  (when (or (= trap-number sb-vm:cerror-trap)
-            (>= trap-number sb-vm:error-trap))
-   (multiple-value-bind (errnum adjust sc+offsets lengths error-byte)
+  (multiple-value-bind (errnum adjust sc+offsets lengths error-byte)
        (funcall error-parse-fun
                 (dstate-segment-sap dstate)
                 (dstate-next-offs dstate)
                 trap-number
                 (null stream))
-     (when stream
+    (when stream
        (setf (dstate-cur-offs dstate)
              (dstate-next-offs dstate))
        (flet ((emit-err-arg ()
@@ -2172,7 +2226,7 @@
            (if (= (sb-c:sc+offset-scn sc+offset) sb-vm:constant-sc-number)
                (note-code-constant (sb-c:sc+offset-offset sc+offset) dstate :index)
                (emit-note (get-random-tn-name sc+offset))))))
-     (incf (dstate-next-offs dstate) adjust))))
+    (incf (dstate-next-offs dstate) adjust)))
 
 ;;; arm64 stores an error-number in the instruction bytes,
 ;;; so can't easily share this code.

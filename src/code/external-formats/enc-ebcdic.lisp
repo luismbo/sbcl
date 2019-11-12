@@ -64,11 +64,13 @@
      (,(make-od-name 'latin->string accessor) array astart aend #'ebcdic-us->code-mapper)))
 (instantiate-octets-definition define-ebcdic-us->string)
 
-(define-unibyte-external-format :ebcdic-us (:cp037 :|cp037| :ibm-037 :ibm037)
+(define-character-coding/unibyte (:ebcdic-us :cp037 :|cp037| :ibm-037 :ibm037)
+  :out-form
   (let ((ebcdic-us-byte (code->ebcdic-us-mapper bits)))
     (if ebcdic-us-byte
         (setf (sap-ref-8 sap tail) ebcdic-us-byte)
         (external-format-encoding-error stream bits)))
+  :in-form
   (code-char (ebcdic-us->code-mapper byte))
-  ebcdic-us->string-aref
-  string->ebcdic-us)
+  :octets-to-string-symbol ebcdic-us->string-aref
+  :string-to-octets-symbol string->ebcdic-us)

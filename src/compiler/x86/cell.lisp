@@ -223,7 +223,7 @@
   (:args (object :scs (descriptor-reg)))
   (:conditional :ne)
   (:generator 9
-    (inst cmp (make-ea-for-object-slot object symbol-value-slot
+    (inst cmp (object-slot-ea object symbol-value-slot
                                        other-pointer-lowtag)
           unbound-marker-widetag)))
 
@@ -236,7 +236,7 @@
   (:result-types positive-fixnum)
   (:generator 2
     ;; The symbol-hash slot of NIL holds NIL because it is also the
-    ;; cdr slot, so we have to strip off the two low bits to make sure
+    ;; car slot, so we have to strip off the two low bits to make sure
     ;; it is a fixnum.  The lowtag selection magic that is required to
     ;; ensure this is explained in the comment in objdef.lisp
     (loadw res symbol symbol-hash-slot other-pointer-lowtag)
@@ -268,7 +268,7 @@
   (:temporary (:sc unsigned-reg) raw)
   (:results (result :scs (descriptor-reg)))
   (:generator 38
-    (inst lea raw (make-fixup 'closure-tramp :assembly-routine))
+    (inst mov raw (make-fixup 'closure-tramp :assembly-routine))
     (inst cmp (make-ea :byte :base function :disp (- fun-pointer-lowtag))
           simple-fun-widetag)
     (inst cmov :e raw

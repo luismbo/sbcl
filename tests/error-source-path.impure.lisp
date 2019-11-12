@@ -93,6 +93,45 @@
   (assert-condition-source-paths (declare (1)) (1))
   (assert-condition-source-paths (declare (type integer) (1)) (2)))
 
+(with-test (:name (:source-path defclass :slot :type :initform))
+  (assert-condition-source-paths
+   (defclass foo () ((x :type string :initform 1)))
+   (0 3))
+  (assert-condition-source-paths
+   (defclass foo () ((x :type string :initform (+ 1 5))))
+   (4 0 3)))
+
+(with-test (:name (:source-path :&key :initform))
+  (assert-condition-source-paths
+   (defun foo (&key (x 15))
+     (declare (float x))
+     x)
+   (1 2))
+  (assert-condition-source-paths
+   (defun foo (&key (x /))
+     (declare (float x))
+     x)
+   (1 2))
+  (assert-condition-source-paths
+   (defun foo (&key (x (print 16)))
+     (declare (float x))
+     x)
+   (1 1 2)))
+
+(with-test (:name (:source-path :defstruct :initform))
+  (assert-condition-source-paths
+   (defstruct f
+     (x (print t) :type fixnum))
+   (2))
+  (assert-condition-source-paths
+   (defstruct f
+     (x 33 :type cons))
+   (2))
+  (assert-condition-source-paths
+   (defstruct f
+     (x mm))
+   (2)))
+
 (with-test (:name (:source-path defgeneric :lambda-list))
   (assert-condition-source-paths
    (defgeneric foo (x x))

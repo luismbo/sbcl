@@ -208,6 +208,14 @@
                 (ensure-symbol-hash x)
                 result)))))
 
+(deftransform symbol-hash* ((object predicate) (symbol null) * :important nil)
+  `(symbol-hash* object 'symbolp)) ; annotate that object satisfies SYMBOLP
+(deftransform symbol-hash* ((object predicate)
+                            ((and (not null) symbol)
+                             (constant-arg (member nil symbolp)))
+                            * :important nil)
+  `(symbol-hash* object 'non-null-symbol-p)) ; etc
+
 ;;; These transforms are somehow needed when compiling ARRAY-PSXHASH and
 ;;; then never again.  Can't we define the guts of it to not need them?
 (deftransform psxhash ((x &optional depthoid) (character &optional t))
@@ -223,10 +231,19 @@
 (progn
   (defvar *sxhash-crosscheck* nil)
   (defun sxhash (x)
-    (let ((answer (etypecase x ; croak on anything but these
-                    (null         (ash sb-vm:nil-value (- sb-vm:n-fixnum-tag-bits)))
-                    (sb-xc:fixnum #.+sxhash-fixnum-expr+)
-                    (single-float #.+sxhash-single-float-expr+)
-                    (double-float #.+sxhash-double-float-expr+))))
+    (let ((answer
+           (etypecase x ; croak on anything but these
+            (null (ash sb-vm:nil-value (- sb-vm:n-fixnum-tag-bits)))
+            (symbol
+             ;; There had better not be homographs of NIL.
+             ;; See the comment in COMPUTE-SYMBOL-HASH for explanation.
+             (aver (string/= x "NIL"))
+             (let* ((string (coerce (string x) 'simple-string))
+                    (length (length string))
+                    (string-hash (sb-impl::%sxhash-simple-substring string 0 length)))
+               (logand (lognot string-hash) sb-xc:most-positive-fixnum)))
+            (sb-xc:fixnum #.+sxhash-fixnum-expr+)
+            (single-float #.+sxhash-single-float-expr+)
+            (double-float #.+sxhash-double-float-expr+))))
       (push (cons x answer) *sxhash-crosscheck*)
       answer)))

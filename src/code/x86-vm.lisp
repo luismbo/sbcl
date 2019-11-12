@@ -22,7 +22,7 @@
 ;;; Return T if and only if the fixup needs to be recorded in %CODE-FIXUPS
 (defun fixup-code-object (code offset fixup kind flavor)
   (declare (type index offset))
-  (declare (ignore flavor))
+  (declare (ignorable flavor))
   (let* ((obj-start-addr (logandc2 (get-lisp-obj-address code) sb-vm:lowtag-mask))
          (sap (code-instructions code))
          (code-end-addr (+ (sap-int sap) (%code-code-size code))))
@@ -30,11 +30,17 @@
       (:absolute
        ;; Word at sap + offset contains a value to be replaced by
        ;; adding that value to fixup.
-       (setf (sap-ref-32 sap offset) (+ fixup (sap-ref-32 sap offset)))
-       ;; Record absolute fixups that point into CODE. An absolute fixup
-       ;; can't point to another dynamic-space object, but it could point
-       ;; to read-only or static space. Those don't need to be saved.
-       (< obj-start-addr (sap-ref-32 sap offset) code-end-addr))
+       (let ((final-val (+ fixup (sap-ref-32 sap offset))))
+         (setf (sap-ref-32 sap offset) final-val)
+         ;; Record absolute fixups that point into CODE itself, with one
+         ;; exception: fixups within the range of unboxed words containing
+         ;; jump tables are automatically adjusted if the code moves.
+         (let ((n-jump-table-words
+                (the (unsigned-byte 16)
+                     (get-lisp-obj-address
+                      (code-header-ref code (code-header-words code))))))
+           (and (< obj-start-addr final-val code-end-addr)
+                (>= offset (ash n-jump-table-words word-shift))))))
       (:relative
        ;; Fixup is the actual address wanted.
        ;; Replace word with value to add to that loc to get there.

@@ -3211,6 +3211,27 @@ is :ANY, the function name is not checked."
              (lvar-value lvar))
     t))
 
+(defun process-lvar-type-annotation (lvar annotation)
+  (let ((type (lvar-type-annotation-type annotation))
+        (uses (lvar-uses lvar))
+        (condition (if (eq (lvar-type-annotation-context annotation) :initform)
+                       'sb-int:type-style-warning
+                       'sb-int:type-warning)))
+    (cond ((not (types-equal-or-intersect (lvar-type lvar) type))
+           (%compile-time-type-error-warn annotation (type-specifier type)
+                                          (type-specifier (lvar-type lvar))
+                                          (lvar-all-sources lvar)
+                                          :condition condition))
+          ((consp uses)
+           (loop for use in uses
+                 for dtype = (node-derived-type use)
+                 unless (values-types-equal-or-intersect dtype type)
+                 do (%compile-time-type-error-warn annotation
+                                                   (type-specifier type)
+                                                   (type-specifier dtype)
+                                                   (list (node-source-form use))
+                                                   :condition condition))))))
+
 (defun process-annotations (lvar)
   (unless (and (combination-p (lvar-dest lvar))
                (lvar-fun-is
@@ -3234,7 +3255,9 @@ is :ANY, the function name is not checked."
                     (lvar-function-designator-annotation
                      (check-function-designator-lvar lvar annot))
                     (lvar-function-annotation
-                     (check-function-lvar lvar annot)))
+                     (check-function-lvar lvar annot))
+                    (lvar-type-annotation
+                     (process-lvar-type-annotation lvar annot)))
               (setf (lvar-annotation-fired annot) t))))))
 
 (defun add-annotation (lvar annotation)

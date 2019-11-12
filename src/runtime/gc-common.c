@@ -303,37 +303,35 @@ trans_code(struct code *code)
 
     set_forwarding_pointer((lispobj *)code, l_new_code);
 
-    /* set forwarding pointers for all the function headers in the */
-    /* code object.  also fix all self pointers */
-    /* Do this by scanning the new code, since the old header is unusable */
-
-    uword_t displacement = l_new_code - l_code;
     struct code *new_code = (struct code *) native_pointer(l_new_code);
+    uword_t displacement = l_new_code - l_code;
 
-    for_each_simple_fun(i, nfheaderp, new_code, 1, {
-        /* Calculate the old raw function pointer */
-        struct simple_fun* fheaderp =
-          (struct simple_fun*)LOW_WORD((char*)nfheaderp - displacement);
-        /* Calculate the new lispobj */
-        lispobj nfheaderl = make_lispobj(nfheaderp, FUN_POINTER_LOWTAG);
-
-        set_forwarding_pointer((lispobj *)fheaderp, nfheaderl);
-
-        /* fix self pointer. */
-        nfheaderp->self =
-#if defined(LISP_FEATURE_X86) || defined(LISP_FEATURE_X86_64)
-            FUN_RAW_ADDR_OFFSET +
+#if defined LISP_FEATURE_X86 || defined LISP_FEATURE_X86_64
+    // Fixup absolute jump tables. These aren't recorded in code->fixups
+    // because we don't need to denote an arbitrary set of places in the code.
+    // The count alone suffices. A GC immediately after creating the code
+    // could cause us to observe some 0 words here. Those should be ignored.
+    lispobj* jump_table = (lispobj*)code_text_start(new_code);
+    int count = *jump_table;
+    int i;
+    for (i = 1; i < count; ++i)
+        if (jump_table[i]) jump_table[i] += displacement;
 #endif
-            nfheaderl;
+    for_each_simple_fun(i, new_fun, new_code, 1, {
+        // Calculate the old raw function pointer
+        struct simple_fun* old_fun = (struct simple_fun*)((char*)new_fun - displacement);
+        if (fun_self_from_baseptr(old_fun) == old_fun->self) {
+            new_fun->self = fun_self_from_baseptr(new_fun);
+            set_forwarding_pointer((lispobj*)old_fun,
+                                   make_lispobj(new_fun, FUN_POINTER_LOWTAG));
+        }
     })
+    gencgc_apply_code_fixups(code, new_code);
 #ifdef LISP_FEATURE_GENCGC
     /* Cheneygc doesn't need this os_flush_icache, it flushes the whole
        spaces once when all copying is done. */
     os_flush_icache(code_text_start(new_code), code_text_size(new_code));
 #endif
-
-    gencgc_apply_code_fixups(code, new_code);
-
     return new_code;
 }
 
@@ -382,13 +380,12 @@ static sword_t
 scav_closure(lispobj *where, lispobj header)
 {
     struct closure *closure = (struct closure *)where;
-    lispobj fun = closure->fun;
-    if (fun) {
-        fun -= FUN_RAW_ADDR_OFFSET;
+    if (closure->fun) {
+        lispobj fun = fun_taggedptr_from_self(closure->fun);
         lispobj newfun = fun;
         scavenge(&newfun, 1);
         if (newfun != fun) // Don't write unnecessarily
-            closure->fun = ((struct simple_fun*)(newfun - FUN_POINTER_LOWTAG))->self;
+            closure->fun = fun_self_from_taggedptr(newfun);
     }
     int payload_words = SHORT_BOXED_NWORDS(header);
     // Payload includes 'fun' which was just looked at, so subtract it.
@@ -1308,7 +1305,7 @@ scav_vector (lispobj *where, lispobj header)
     }
     struct hash_table *hash_table  = (struct hash_table *)native_pointer(ltable);
     if (widetag_of(&hash_table->header) != INSTANCE_WIDETAG) {
-        lose("hash table not instance (%"OBJ_FMTX" at %p)\n",
+        lose("hash table not instance (%"OBJ_FMTX" at %p)",
              hash_table->header,
              hash_table);
     }
@@ -1544,20 +1541,6 @@ boolean valid_widetag_p(unsigned char widetag) {
  */
 
 #include "genesis/gc-tables.h"
-
-
-lispobj *search_all_gc_spaces(void *pointer)
-{
-    lispobj *start;
-    if (((start = search_dynamic_space(pointer)) != NULL) ||
-#ifdef LISP_FEATURE_IMMOBILE_SPACE
-        ((start = search_immobile_space(pointer)) != NULL) ||
-#endif
-        ((start = search_static_space(pointer)) != NULL) ||
-        ((start = search_read_only_space(pointer)) != NULL))
-        return start;
-    return NULL;
-}
 
 /* Find the code object for the given pc, or return NULL on
    failure. */

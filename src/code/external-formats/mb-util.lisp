@@ -248,16 +248,19 @@
        (instantiate-octets-definition ,define-mb->string)
 
        ;; for fd-stream.lisp
-       (define-external-format/variable-width ,aliases t
+       (define-character-coding/variable-width ,aliases
+         :output-restart t
          ;; KLUDGE: it so happens that at present (2009-10-22) none of
          ;; the external formats defined with
          ;; define-multibyte-encoding can encode the unicode
          ;; replacement character, so we hardcode the preferred
          ;; replacement here.
-         #\?
+         :replacement-character #\?
+         :out-size-expr
          (block size
            (mb-char-len (or (,ucs-to-mb (char-code byte))
                             (return-from size 0))))
+         :out-expr
          (let ((mb (,ucs-to-mb bits)))
            (if (null mb)
                (external-format-encoding-error stream byte)
@@ -268,7 +271,9 @@
                  (3 (setf (sap-ref-8 sap tail) (ldb (byte 8 16) mb)
                           (sap-ref-8 sap (1+ tail)) (ldb (byte 8 8) mb)
                           (sap-ref-8 sap (+ 2 tail)) (ldb (byte 8 0) mb))))))
+         :in-size-expr
          (1 (,mb-len byte))
+         :in-expr
          (let* ((mb (ecase size
                       (1 byte)
                       (2 (let ((byte2 (sap-ref-8 sap (1+ head))))
@@ -286,5 +291,5 @@
            (if (null ucs)
                (return-from decode-break-reason 1)
                (code-char ucs)))
-         ,(make-od-name format '>string-aref)
-         ,string->mb))))
+         :octets-to-string-symbol ,(make-od-name format '>string-aref)
+         :string-to-octets-symbol ,string->mb))))

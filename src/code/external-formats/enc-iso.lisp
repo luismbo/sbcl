@@ -1,7 +1,7 @@
 (in-package "SB-IMPL")
 
-(define-unibyte-mapping-external-format :iso-8859-2
-    (:|iso-8859-2| :latin-2 :|latin-2|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-2 :|iso-8859-2| :latin-2 :|latin-2|)
   (#xA1 #x0104) ; LATIN CAPITAL LETTER A WITH OGONEK
   (#xA2 #x02D8) ; BREVE
   (#xA3 #x0141) ; LATIN CAPITAL LETTER L WITH STROKE
@@ -61,8 +61,8 @@
   (#xFF #x02D9) ; DOT ABOVE
 )
 
-(define-unibyte-mapping-external-format :iso-8859-3
-    (:|iso-8859-3| :latin-3 :|latin-3|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-3 :|iso-8859-3| :latin-3 :|latin-3|)
   (#xA1 #x0126) ; LATIN CAPITAL LETTER H WITH STROKE
   (#xA2 #x02D8) ; BREVE
   (#xA5 nil)
@@ -100,8 +100,8 @@
   (#xFF #x02D9) ; DOT ABOVE
 )
 
-(define-unibyte-mapping-external-format :iso-8859-4
-    (:|iso-8859-4| :latin-4 :|latin-4|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-4 :|iso-8859-4| :latin-4 :|latin-4|)
   (#xA1 #x0104) ; LATIN CAPITAL LETTER A WITH OGONEK
   (#xA2 #x0138) ; LATIN SMALL LETTER KRA
   (#xA3 #x0156) ; LATIN CAPITAL LETTER R WITH CEDILLA
@@ -154,7 +154,7 @@
   (#xFF #x02D9) ; DOT ABOVE
 )
 
-(define-unibyte-mapping-external-format :iso-8859-5 (:|iso-8859-5|)
+(define-character-coding/unibyte-mapping (:iso-8859-5 :|iso-8859-5|)
   (#xA1 #x0401) ; CYRILLIC CAPITAL LETTER IO
   (#xA2 #x0402) ; CYRILLIC CAPITAL LETTER DJE
   (#xA3 #x0403) ; CYRILLIC CAPITAL LETTER GJE
@@ -251,7 +251,7 @@
   (#xFF #x045F) ; CYRILLIC SMALL LETTER DZHE
 )
 
-(define-unibyte-mapping-external-format :iso-8859-6 (:|iso-8859-6|)
+(define-character-coding/unibyte-mapping (:iso-8859-6 :|iso-8859-6|)
   (#xA1 nil)
   (#xA2 nil)
   (#xA3 nil)
@@ -347,7 +347,7 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :iso-8859-7 (:|iso-8859-7|)
+(define-character-coding/unibyte-mapping (:iso-8859-7 :|iso-8859-7|)
   (#xA1 #x02BD) ; MODIFIER LETTER REVERSED COMMA
   (#xA2 #x02BC) ; MODIFIER LETTER APOSTROPHE
   (#xA4 nil)
@@ -430,7 +430,7 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :iso-8859-8 (:|iso-8859-8|)
+(define-character-coding/unibyte-mapping (:iso-8859-8 :|iso-8859-8|)
   (#xA1 nil)
   (#xAA #x00D7) ; MULTIPLICATION SIGN
   (#xAF #x203E) ; OVERLINE
@@ -502,8 +502,8 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :iso-8859-9
-    (:|iso-8859-9| :latin-5 :|latin-5|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-9 :|iso-8859-9| :latin-5 :|latin-5|)
   (#xD0 #x011E) ; LATIN CAPITAL LETTER G WITH BREVE
   (#xDD #x0130) ; LATIN CAPITAL LETTER I WITH DOT ABOVE
   (#xDE #x015E) ; LATIN CAPITAL LETTER S WITH CEDILLA
@@ -512,8 +512,8 @@
   (#xFE #x015F) ; LATIN SMALL LETTER S WITH CEDILLA
 )
 
-(define-unibyte-mapping-external-format :iso-8859-10
-    (:|iso-8859-10| :latin-6 :|latin-6|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-10 :|iso-8859-10| :latin-6 :|latin-6|)
   (#xA1 #x0104) ; LATIN CAPITAL LETTER A WITH OGONEK
   (#xA2 #x0112) ; LATIN CAPITAL LETTER E WITH MACRON
   (#xA3 #x0122) ; LATIN CAPITAL LETTER G WITH CEDILLA
@@ -562,7 +562,7 @@
   (#xFF #x0138) ; LATIN SMALL LETTER KRA
 )
 
-(define-unibyte-mapping-external-format :iso-8859-11 (:|iso-8859-11|)
+(define-character-coding/unibyte-mapping (:iso-8859-11 :|iso-8859-11|)
   (#xA1 #x0E01) ; THAI CHARACTER KO KAI
   (#xA2 #x0E02) ; THAI CHARACTER KHO KHAI
   (#xA3 #x0E03) ; THAI CHARACTER KHO KHUAT
@@ -660,8 +660,8 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :iso-8859-13
-    (:|iso-8859-13| :latin-7 :|latin-7|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-13 :|iso-8859-13| :latin-7 :|latin-7|)
   (#xA1 #x201D) ; RIGHT DOUBLE QUOTATION MARK
   (#xA5 #x201E) ; DOUBLE LOW-9 QUOTATION MARK
   (#xA8 #x00D8) ; LATIN CAPITAL LETTER O WITH STROKE
@@ -720,8 +720,8 @@
   (#xFF #x2019) ; RIGHT SINGLE QUOTATION MARK
 )
 
-(define-unibyte-mapping-external-format :iso-8859-14
-    (:|iso-8859-14| :latin-8 :|latin-8|)
+(define-character-coding/unibyte-mapping
+    (:iso-8859-14 :|iso-8859-14| :latin-8 :|latin-8|)
   (#xA1 #x1E02) ; LATIN CAPITAL LETTER B WITH DOT ABOVE
   (#xA2 #x1E03) ; LATIN SMALL LETTER B WITH DOT ABOVE
   (#xA4 #x010A) ; LATIN CAPITAL LETTER C WITH DOT ABOVE
@@ -756,8 +756,8 @@
 )
 
 ;;; The names for latin9 are different due to a historical accident.
-(define-unibyte-mapping-external-format :latin-9
-    (:latin9 :iso-8859-15 :iso8859-15)
+(define-character-coding/unibyte-mapping
+    (:latin-9 :latin9 :iso-8859-15 :iso8859-15)
   (#xA4 #x20AC)
   (#xA6 #x0160)
   (#xA8 #x0161)

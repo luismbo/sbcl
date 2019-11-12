@@ -40,22 +40,31 @@
         (let ((sb-xc:*features* (cons :sb-assembling sb-xc:*features*))
               (*readtable* sb-cold:*xc-readtable*))
           (load (merge-pathnames name (make-pathname :type "lisp")))
-          ;; Leave room for the indirect call table. relocate_heap() in
-          ;; 'coreparse' finds the end with a 0 word so add 1 extra word.
+          ;; Reserve space for the jump table. The first word of the table
+          ;; indicates the total length in words, counting the length word itself
+          ;; as a word, and the words comprising jump tables that were registered
+          ;; as unboxed constants. The logic in compiler/codegen splits unboxed
+          ;; constants into two groups: jump-tables and everything else, but that's
+          ;; because a code coverage map, if present, goes in between them.
+          ;; Assembly routines have no coverage map, so there is no need to split.
           #+(or x86 x86-64)
-          (emit (asmstream-data-section asmstream)
-                `(.skip ,(* (align-up (1+ (length *entry-points*)) 2)
-                            sb-vm:n-word-bytes)))
-          (when (emit-inline-constants)
-            ;; Ensure alignment to double-Lispword in case a raw constant
-            ;; causes misalignment, as actually happens on ARM64.
-            ;; You might think one Lispword is aligned enough, but it isn't,
-            ;; because to created a tagged pointer to an asm routine,
-            ;; the base address must have all 0s in the tag bits.
-            ;; Note that for code components that contain simple-funs,
-            ;; alignment is ensured by SIMPLE-FUN-HEADER-WORD.
+          (let ((n-extra-words
+                 (loop for ((category . data) . label)
+                       across (asmstream-constant-vector asmstream)
+                       when (eq category :jump-table) sum (length data))))
             (emit (asmstream-data-section asmstream)
-                  `(.align ,sb-vm:n-lowtag-bits)))
+                  `(.lispword ,(+ (length *entry-points*) n-extra-words 1))
+                  `(.skip ,(* (length *entry-points*) sb-vm:n-word-bytes))))
+          (emit-inline-constants)
+          ;; Ensure alignment to double-Lispword in case a raw constant
+          ;; causes misalignment, as actually happens on ARM64.
+          ;; You might think one Lispword is aligned enough, but it isn't,
+          ;; because to created a tagged pointer to an asm routine,
+          ;; the base address must have all 0s in the tag bits.
+          ;; Note that for code components that contain simple-funs,
+          ;; alignment is ensured by SIMPLE-FUN-HEADER-WORD.
+          (emit (asmstream-data-section asmstream)
+                `(.align ,sb-vm:n-lowtag-bits))
           (let ((segment (assemble-sections
                           asmstream nil
                           (make-segment :inst-hook (default-segment-inst-hook)
@@ -147,8 +156,8 @@
          ;; by GENERATE-ERROR-CODE were interposed between those.
          #-arm
          (let ((asmstream *asmstream*))
-           (join-sections (asmstream-code-section asmstream)
-                          (asmstream-elsewhere-section asmstream)))
+           (append-sections (list (asmstream-code-section asmstream)
+                                  (asmstream-elsewhere-section asmstream))))
          (emit-alignment sb-vm:n-lowtag-bits
                          ;; EMIT-LONG-NOP does not exist for (not x86-64)
                          #+x86-64 :long-nop))

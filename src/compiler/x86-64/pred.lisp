@@ -60,6 +60,60 @@
               (dolist (flag flags)
                 (inst jmp flag dest)))))))
 
+(define-vop (multiway-branch-if-eq)
+  ;; TODO: also accept signed-reg, unsigned-reg, character-reg
+  ;; also, could probably tighten up the TN lifetime to avoid a move
+  (:args (x :scs (any-reg descriptor-reg)))
+  (:info values labels otherwise test-vop-name)
+  (:temporary (:sc unsigned-reg) table)
+  (:generator 10
+    (etypecase (car values)
+      (fixnum
+       (let* ((min (reduce #'min values))
+              (max (reduce #'max values))
+              (vector (make-array (1+ (- max min)) :initial-element otherwise)))
+         (mapc (lambda (value label) (setf (aref vector (- value min)) label))
+               values labels)
+         ;; First exclude out-of-bounds values because there's no harm
+         ;; in doing that up front regardless of the argument's lisp type.
+         (let ((-min (fixnumize (- min))))
+           (typecase -min
+            ;; TODO: if min is 0, use X directly, don't move into temp-reg-tn
+            ((eql 0) (move temp-reg-tn x))
+            ((signed-byte 32) (inst lea temp-reg-tn (ea -min x)))
+            (t (inst mov temp-reg-tn x)
+               (inst add :qword temp-reg-tn (constantize -min)))))
+         (inst cmp temp-reg-tn (constantize (fixnumize (- max min))))
+         (inst jmp :a otherwise)
+         ;; We have to check the type here because a chain of EQ tests
+         ;; does not impose a type constraint.
+         ;; If type of X was derived as fixnum, then elide this test.
+         (unless (eq test-vop-name 'sb-vm::fast-if-eq-fixnum/c)
+           (inst test :byte x fixnum-tag-mask)
+           (inst jmp :ne otherwise))
+         (inst lea table (register-inline-constant :jump-table (coerce vector 'list)))
+         (inst jmp (ea table temp-reg-tn 4))))
+      (character
+       (let* ((min (reduce #'min values :key #'sb-xc:char-code))
+              (max (reduce #'max values :key #'sb-xc:char-code))
+              (vector (make-array (1+ (- max min)) :initial-element otherwise)))
+         (mapc (lambda (value label)
+                 (setf (aref vector (- (sb-xc:char-code value) min)) label))
+               values labels)
+         ;; Same as above, but test the widetag before shifting it out.
+         (unless (member test-vop-name '(fast-char=/character/c
+                                         fast-if-eq-character/c))
+           (inst cmp :byte x character-widetag)
+           (inst jmp :ne otherwise))
+         (inst mov :dword temp-reg-tn x)
+         (inst shr :dword temp-reg-tn n-widetag-bits)
+         (unless (= min 0)
+           (inst sub :dword temp-reg-tn min))
+         (inst cmp temp-reg-tn (- max min))
+         (inst jmp :a otherwise)
+         (inst lea table (register-inline-constant :jump-table (coerce vector 'list)))
+         (inst jmp (ea table temp-reg-tn 8)))))))
+
 (define-load-time-global *cmov-ptype-representation-vop*
   (mapcan (lambda (entry)
             (destructuring-bind (ptypes &optional sc vop)
@@ -351,12 +405,5 @@
     ;; Anything else it needs will be callee-saved.
     (move rdi x) ; load the C call args
     (move rsi y)
-
-    (let ((fixup (make-fixup "generic_eql" :foreign)))
-      (cond ((sb-c::code-immobile-p vop))
-            (t
-             (inst mov temp-reg-tn fixup)
-             (setf fixup temp-reg-tn)))
-      (inst call fixup)) ; result => ZF
-
+    (invoke-asm-routine 'call 'generic-eql vop)
     DONE))

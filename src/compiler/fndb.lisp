@@ -49,7 +49,7 @@
 ;;; FIXNUMness) might be different between host and target. Perhaps
 ;;; this property should be protected by #-SB-XC-HOST? Perhaps we need
 ;;; 3-stage bootstrapping after all? (Ugh! It's *so* slow already!)
-(defknown typep (t type-specifier &optional lexenv-designator) t
+(defknown typep (t type-specifier &optional lexenv-designator) boolean
    ;; Unlike SUBTYPEP or UPGRADED-ARRAY-ELEMENT-TYPE and friends, this
    ;; seems to be FOLDABLE. Like SUBTYPEP, it's affected by type
    ;; definitions, but unlike SUBTYPEP, there should be no way to make
@@ -278,10 +278,12 @@
   (movable foldable flushable))
 
 (defknown gcd (&rest integer) unsigned-byte
-  (movable foldable flushable)
-  #|:derive-type 'boolean-result-type|#)
-(defknown lcm (&rest integer) unsigned-byte
   (movable foldable flushable))
+(defknown sb-kernel::fixnum-gcd (fixnum fixnum) (integer 0 #.(1+ most-positive-fixnum))
+    (movable foldable flushable))
+
+(defknown lcm (&rest integer) unsigned-byte
+    (movable foldable flushable))
 
 #+sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
 (defknown exp (number) irrational
@@ -1635,6 +1637,7 @@
 
 ;;; and analogous SBCL extension:
 (defknown sb-impl::%failed-aver (t) nil)
+(defknown sb-impl::unreachable () nil)
 (defknown bug (t &rest t) nil) ; never returns
 (defknown simple-reader-error (stream string &rest t) nil)
 (defknown sb-kernel:reader-eof-error (stream string) nil)

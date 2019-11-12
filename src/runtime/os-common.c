@@ -69,7 +69,7 @@ os_zero(os_vm_address_t addr, os_vm_size_t length)
         addr = os_validate(NOT_MOVABLE, block_start, block_size);
 
         if (addr == NULL || addr != block_start)
-            lose("os_zero: block moved! %p ==> %p\n", block_start, addr);
+            lose("os_zero: block moved! %p ==> %p", block_start, addr);
     }
 }
 #endif
@@ -214,18 +214,30 @@ gc_managed_heap_space_p(lispobj addr)
 
 #ifndef LISP_FEATURE_WIN32
 
-/* Remap a part of an already existing mapping to a file */
-void os_map(int fd, int offset, os_vm_address_t addr, os_vm_size_t len)
+/* Remap a part of an already existing memory mapping from a file */
+void load_core_bytes(int fd, int offset, os_vm_address_t addr, os_vm_size_t len)
 {
+    int fail = 0;
+#ifdef LISP_FEATURE_HPUX
+    // Revision afcfb8b5da said that mmap() didn't work on HPUX, changing to use read() instead.
+    // Strangely it also read 4K at a time into a buffer and used memcpy to transfer the buffer.
+    // I don't see why, and given the lack of explanation, I've simplified to 1 read.
+    fail = lseek(fd, offset, SEEK_SET) == (off_t)-1 || read(fd, addr, len) != (ssize_t)len;
+    // This looks bogus but harmlesss, so I'm leaving it.
+    os_flush_icache(addr, len);
+#else
     os_vm_address_t actual;
-
     actual = mmap(addr, len, OS_VM_PROT_ALL, MAP_PRIVATE | MAP_FIXED,
                   fd, (off_t) offset);
-    if (actual == MAP_FAILED || (addr && (addr != actual))) {
+    if (actual == MAP_FAILED) {
         perror("mmap");
-        lose("unexpected mmap(%"OBJ_FMTX", %"OBJ_FMTX") failure\n",
-             (lispobj)addr, (lispobj)len);
+        fail = 1;
+    } else if (addr && (addr != actual)) {
+        fail = 1;
     }
+#endif
+    if (fail)
+        lose("load_core_bytes(%d,%x,%lx,%x) failed", fd, offset, (long)addr, (int)len);
 }
 
 boolean

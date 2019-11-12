@@ -52,6 +52,20 @@
       (+ (get-lisp-obj-address fdefn)
          (- 2 sb-vm:other-pointer-lowtag)))))
 
+;;; Point FUN's 'self' slot to FUN.
+;;; FUN must be pinned when calling this.
+(declaim (inline assign-simple-fun-self))
+(defun assign-simple-fun-self (fun)
+  (setf (%simple-fun-self fun)
+        ;; x86 backends store the address of the entrypoint in 'self'
+        #+(or x86 x86-64)
+        (%make-lisp-obj
+         (truly-the word (+ (get-lisp-obj-address fun)
+                            (ash sb-vm:simple-fun-insts-offset sb-vm:word-shift)
+                            (- sb-vm:fun-pointer-lowtag))))
+        ;; non-x86 backends store the function itself (what else?) in 'self'
+        #-(or x86 x86-64) fun))
+
 (flet ((fixup (code-obj offset sym kind flavor preserved-lists statically-link-p)
          (declare (ignorable statically-link-p))
          ;; PRESERVED-LISTS is a vector of lists of locations (by kind)
@@ -77,43 +91,38 @@
                    #+immobile-code
                    (:named-call
                     (when statically-link-p
-                      (push (cons offset sym) (elt preserved-lists 3)))
+                      (push (cons offset sym) (elt preserved-lists 0)))
                     (sb-vm::fdefn-entry-address sym))
                    #+immobile-code (:static-call (sb-vm::function-raw-address sym)))
                  kind flavor)
            (ecase kind
-             (:relative (push offset (elt preserved-lists 0)))
-             (:absolute (push offset (elt preserved-lists 1)))))
+             (:relative (push offset (elt preserved-lists 1)))
+             (:absolute (push offset (elt preserved-lists 2)))
+             (:absolute64 (push offset (elt preserved-lists 3)))))
          ;; These won't exist except for x86-64, but it doesn't matter.
          (when (member sym '(sb-vm::enable-alloc-counter
                              sb-vm::enable-sized-alloc-counter))
-           (push offset (elt preserved-lists 2))))
+           (push offset (elt preserved-lists 4))))
 
        (finish-fixups (code-obj preserved-lists)
          (declare (ignorable code-obj preserved-lists))
-         #+(or immobile-space x86)
-         (let ((rel-fixups (elt preserved-lists 0))
-               (abs-fixups (elt preserved-lists 1)))
+         #+(or x86 x86-64)
+         (let ((rel-fixups (elt preserved-lists 1))
+               (abs-fixups (elt preserved-lists 2))
+               (abs64-fixups (elt preserved-lists 3)))
+           (aver (not abs64-fixups)) ; no preserved 64-bit fixups
            (when (or abs-fixups rel-fixups)
              (setf (sb-vm::%code-fixups code-obj)
                    (sb-c::pack-code-fixup-locs abs-fixups rel-fixups))))
-         (awhen (elt preserved-lists 2)
+         (awhen (elt preserved-lists 4)
            (setf (gethash code-obj *allocation-point-fixups*)
                  (convert-alloc-point-fixups code-obj it)))
-         (awhen (aref preserved-lists 3)
+         (awhen (aref preserved-lists 0)
            (sb-vm::statically-link-code-obj code-obj it))
          ;; Assign all SIMPLE-FUN-SELF slots
          (dotimes (i (code-n-entries code-obj))
            (let ((fun (%code-entry-point code-obj i)))
-             (setf (%simple-fun-self fun)
-                   ;; x86 backends store the address of the entrypoint in 'self'
-                   #+(or x86 x86-64)
-                   (%make-lisp-obj
-                    (truly-the word (+ (get-lisp-obj-address fun)
-                                       (ash sb-vm:simple-fun-insts-offset sb-vm:word-shift)
-                                       (- sb-vm:fun-pointer-lowtag))))
-                   ;; non-x86 backends store the function itself (what else?) in 'self'
-                   #-(or x86 x86-64) fun)
+             (assign-simple-fun-self fun)
              ;; And maybe store the layout in the high half of the header
              #+(and compact-instance-header x86-64)
              (setf (sap-ref-32 (int-sap (get-lisp-obj-address fun))
@@ -125,7 +134,7 @@
          (sb-vm:sanctify-for-execution code-obj)))
 
   (defun apply-fasl-fixups (fop-stack code-obj n-fixups &aux (top (svref fop-stack 0)))
-    (dx-let ((preserved (make-array 4 :initial-element nil)))
+    (dx-let ((preserved (make-array 5 :initial-element nil)))
       (macrolet ((pop-fop-stack () `(prog1 (svref fop-stack top) (decf top))))
         (dotimes (i n-fixups (setf (svref fop-stack 0) top))
           (multiple-value-bind (offset kind flavor)
@@ -136,7 +145,7 @@
 
   (defun apply-core-fixups (fixup-notes code-obj)
     (declare (list fixup-notes))
-    (dx-let ((preserved (make-array 4 :initial-element nil)))
+    (dx-let ((preserved (make-array 5 :initial-element nil)))
       (dolist (note fixup-notes)
         (let ((fixup (fixup-note-fixup note))
               (offset (fixup-note-position note)))
@@ -146,6 +155,34 @@
                  (fixup-flavor fixup)
                  preserved t)))
       (finish-fixups code-obj preserved))))
+
+;;; Return a behaviorally identical copy of CODE.
+(defun copy-code-object (code)
+  ;; Must have one simple-fun
+  (aver (= (code-n-entries code) 1))
+  ;; Disallow relative instruction operands.
+  ;; (This restriction could be removed by actually performing fixups)
+  ;; x86-64 absolute fixups are OK since they will only point to static objects.
+  #+x86-64
+  (aver (not (nth-value
+              1 (sb-c:unpack-code-fixup-locs (sb-vm::%code-fixups code)))))
+  (let* ((nbytes (code-object-size code))
+         (boxed (code-header-words code)) ; word count
+         (unboxed (- nbytes (ash boxed sb-vm:word-shift))) ; byte count
+         (copy (allocate-code-object :dynamic boxed unboxed)))
+    (with-pinned-objects (code copy)
+      (%byte-blt (code-instructions code) 0 (code-instructions copy) 0 unboxed)
+      ;; copy boxed constants so that the fixup step (if needed) sees the 'fixups'
+      ;; slot from the new object.
+      (loop for i from 2 below boxed
+            do (setf (code-header-ref copy i) (code-header-ref code i)))
+      ;; x86 needs to fixup instructions that reference code constants,
+      ;; and the jmp to TAIL-CALL-VARIABLE
+      #+x86 (alien-funcall (extern-alien "gencgc_apply_code_fixups" (function void unsigned unsigned))
+                           (- (get-lisp-obj-address code) sb-vm:other-pointer-lowtag)
+                           (- (get-lisp-obj-address copy) sb-vm:other-pointer-lowtag))
+      (assign-simple-fun-self (%code-entry-point copy 0)))
+    copy))
 
 ;;; Note the existence of FUNCTION.
 (defun note-fun (info function object)
@@ -228,13 +265,13 @@
               (list
                (ecase (car const)
                  (:entry
-                  (reference-core-fun code-obj index (cdr const) object))
+                  (reference-core-fun code-obj index (cadr const) object))
                  (:fdefinition
                   (setf (code-header-ref code-obj index)
-                        (find-or-create-fdefn (cdr const))))
+                        (find-or-create-fdefn (cadr const))))
                  (:known-fun
                   (setf (code-header-ref code-obj index)
-                        (%coerce-name-to-fun (cdr const)))))))))))
+                        (%coerce-name-to-fun (cadr const)))))))))))
   (values))
 
 ;;; Backpatch all the DEBUG-INFOs dumped so far with the specified

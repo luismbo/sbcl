@@ -54,11 +54,9 @@
                   (inst push object)))
            (invoke-asm-routine 'call 'code-header-set vop))
           ((equal name '(setf %funcallable-instance-fun))
-           (gen-cell-set (make-ea-for-object-slot object offset lowtag)
-                         value nil vop t))
+           (gen-cell-set (object-slot-ea object offset lowtag) value nil vop t))
           (t
-           (gen-cell-set (make-ea-for-object-slot object offset lowtag)
-                         value nil)))))
+           (gen-cell-set (object-slot-ea object offset lowtag) value nil)))))
 
 ;; INIT-SLOT has to know about the :COMPACT-INSTANCE-HEADER feature.
 (define-vop (init-slot set-slot)
@@ -105,7 +103,7 @@
     (gen-cell-set (cond ((sc-is object immediate)
                          (symbol-slot-ea (tn-value object) symbol-value-slot))
                         (t
-                         (make-ea-for-object-slot object symbol-value-slot
+                         (object-slot-ea object symbol-value-slot
                                                   other-pointer-lowtag)))
                   value nil)))
 
@@ -349,7 +347,7 @@
     (:args (symbol :scs (descriptor-reg)))
     (:conditional :ne)
     (:generator 9
-      (inst cmp :dword (make-ea-for-object-slot
+      (inst cmp :dword (object-slot-ea
                  symbol symbol-value-slot other-pointer-lowtag)
             unbound-marker-widetag))))
 
@@ -361,10 +359,45 @@
   (:result-types positive-fixnum)
   (:generator 2
     ;; The symbol-hash slot of NIL holds NIL because it is also the
-    ;; cdr slot, so we have to zero the fixnum tag bit(s) to make sure
+    ;; car slot, so we have to zero the fixnum tag bit(s) to make sure
     ;; it is a fixnum.  The lowtag selection magic that is required to
     ;; ensure this is explained in the comment in objdef.lisp
     (loadw res symbol symbol-hash-slot other-pointer-lowtag)
+    (inst and res (lognot fixnum-tag-mask))))
+
+(eval-when (:compile-toplevel)
+  ;; assumption: any object can be read 1 word past its base pointer
+  (assert (= sb-vm:symbol-hash-slot 1)))
+
+(define-vop (symbol-hash*)
+  (:policy :fast-safe)
+  (:translate symbol-hash*)
+  (:args (symbol :scs (descriptor-reg)))
+  (:info satisfies)
+  (:arg-types * (:constant (member symbolp non-null-symbol-p)))
+  (:results (res :scs (any-reg)))
+  (:result-types positive-fixnum)
+  (:generator 2
+    (loadw res symbol symbol-hash-slot other-pointer-lowtag)
+    (when (eq satisfies 'symbolp) ; mask to a fixnum
+      (inst and res (lognot fixnum-tag-mask)))))
+(define-vop (symbol-hash*-random) ; this vop needs a temp; the above doesn't
+  (:policy :fast-safe)
+  (:translate symbol-hash*)
+  (:args (object :scs (descriptor-reg)))
+  (:info satisfies)
+  ;; arg can not target the temp because they both have to be live
+  ;; in order that the tagged pointer not disappear.
+  ;; But temp and output could be in the same register.
+  (:temporary (:sc unsigned-reg :to (:result 0)) base-ptr)
+  (:arg-types * (:constant (eql nil)))
+  (:results (res :scs (any-reg)))
+  (:result-types positive-fixnum)
+  (:ignore satisfies)
+  (:generator 4
+    (inst mov base-ptr object)
+    (inst and base-ptr (lognot lowtag-mask))
+    (inst mov res (ea n-word-bytes base-ptr)) ; 1 word beyond the header
     (inst and res (lognot fixnum-tag-mask))))
 
 ;;;; fdefinition (FDEFN) objects

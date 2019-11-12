@@ -117,7 +117,7 @@
       (storew (make-fixup 'uwp-seh-handler :assembly-routine)
               uwp unwind-block-seh-frame-handler-slot)
       (inst lea seh-frame
-            (make-ea-for-object-slot uwp
+            (object-slot-ea uwp
                                      unwind-block-next-seh-frame-slot 0))
       (inst mov (make-ea :dword :disp 0) seh-frame :fs))
     (store-tl-symbol-value uwp *current-unwind-protect-block* tls)))
@@ -164,7 +164,8 @@
           ((= nvals 1)
            (let ((no-values (gen-label)))
              (inst mov (tn-ref-tn values) nil-value)
-             (inst jecxz no-values)
+             (inst test ecx-tn ecx-tn)
+             (inst jmp :z no-values)
              (loadw (tn-ref-tn values) start -1)
              (emit-label no-values)))
           (t
@@ -230,7 +231,7 @@
     (move num ecx)
     (inst shr ecx word-shift)           ; word count for <rep movs>
     ;; If we got zero, we be done.
-    (inst jecxz DONE)
+    (inst jmp :z DONE)
     ;; Copy them down.
     (inst std)
     (inst rep)

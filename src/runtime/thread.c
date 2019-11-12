@@ -357,7 +357,7 @@ init_new_thread(struct thread *th,
 #endif
     if(arch_os_thread_init(th)==0) {
         /* FIXME: handle error */
-        lose("arch_os_thread_init failed\n");
+        lose("arch_os_thread_init failed");
     }
 
     th->os_thread=thread_self();
@@ -699,7 +699,7 @@ create_thread_struct(lispobj start_routine) {
      * on the alignment passed from os_validate, since that might
      * assume the current (e.g. 4k) pagesize, while we calculate with
      * the biggest (e.g. 64k) pagesize allowed by the ABI. */
-    void *spaces = os_validate(IS_THREAD_STRUCT, NULL, THREAD_STRUCT_SIZE);
+    void *spaces = os_validate(MOVABLE|IS_THREAD_STRUCT, NULL, THREAD_STRUCT_SIZE);
     if(!spaces)
         return NULL;
     /* Aligning up is safe as THREAD_STRUCT_SIZE has
@@ -722,6 +722,9 @@ create_thread_struct(lispobj start_routine) {
     th->tls_size = dynamic_values_bytes;
 #endif
     uword_t* __attribute__((__unused__)) constants = (uword_t*)th;
+#if defined LISP_FEATURE_X86_64 && defined LISP_FEATURE_LINUX
+    constants[THREAD_MSAN_XOR_CONSTANT_SLOT] = 0x500000000000;
+#endif
 #ifdef LISP_FEATURE_GENCGC
 #ifdef THREAD_VARYOBJ_CARD_MARKS_SLOT
     extern unsigned int* varyobj_page_touched_bits;
@@ -884,7 +887,7 @@ void create_initial_thread(lispobj initial_function) {
 #endif
     if(th) {
         initial_thread_trampoline(th); /* no return */
-    } else lose("can't create initial thread\n");
+    } else lose("can't create initial thread");
 }
 
 #ifdef LISP_FEATURE_SB_THREAD
@@ -911,7 +914,7 @@ boolean create_os_thread(struct thread *th,os_thread_t *kid_tid)
     pthread_attr_t attr;
     if (pthread_attr_init(&attr) == 0) {
 
-    /* See perform_thread_post_mortem for at least one reason why this lock is neccessary */
+    /* See perform_thread_post_mortem for at least one reason why this lock is necessary */
         retcode = pthread_mutex_lock(&create_thread_lock);
         gc_assert(retcode == 0);
 
@@ -923,13 +926,19 @@ boolean create_os_thread(struct thread *th,os_thread_t *kid_tid)
             (retcode = pthread_create(kid_tid, &attr, new_thread_trampoline_switch_stack, th))
 #else
 
-# if defined(LISP_FEATURE_WIN32)
+# ifdef LISP_FEATURE_WIN32
             pthread_attr_setstacksize(&attr, thread_control_stack_size) ||
 # elif defined(LISP_FEATURE_C_STACK_IS_CONTROL_STACK)
             pthread_attr_setstack(&attr, th->control_stack_start, thread_control_stack_size) ||
 # else
             pthread_attr_setstack(&attr, th->alien_stack_start, ALIEN_STACK_SIZE) ||
 # endif
+# ifdef LISP_FEATURE_NETBSD
+            /* Even though the manpage says pthread_attr_setstack
+               would override the guard page, it's no longer true. */
+            pthread_attr_setguardsize(&attr, 0) ||
+# endif
+
             (retcode = pthread_create(kid_tid, &attr, new_thread_trampoline, th))
 #endif
             ) {
@@ -952,7 +961,7 @@ os_thread_t create_thread(lispobj start_routine) {
 
     /* Must defend against async unwinds. */
     if (read_TLS(INTERRUPTS_ENABLED, thread) != NIL)
-        lose("create_thread is not safe when interrupts are enabled.\n");
+        lose("create_thread is not safe when interrupts are enabled.");
 
     /* Assuming that a fresh thread struct has no lisp objects in it,
      * linking it to all_threads can be left to the thread itself
@@ -1146,7 +1155,7 @@ kill_safely(os_thread_t os_thread, int signal)
             if (thread->os_thread == os_thread) {
                 int status = pthread_kill(os_thread, signal);
                 if (status)
-                    lose("kill_safely: pthread_kill failed with %d\n", status);
+                    lose("kill_safely: pthread_kill failed with %d", status);
 #if defined(LISP_FEATURE_WIN32) && defined(LISP_FEATURE_SB_THRUPTION)
                 wake_thread_win32(thread);
 #endif
@@ -1164,7 +1173,7 @@ kill_safely(os_thread_t os_thread, int signal)
 #else
         int status;
         if (os_thread != 0)
-            lose("kill_safely: who do you want to kill? %d?\n", os_thread);
+            lose("kill_safely: who do you want to kill? %d?", os_thread);
         /* Dubious (as in don't know why it works) workaround for the
          * signal sometimes not being generated on darwin. */
 #ifdef LISP_FEATURE_DARWIN
@@ -1180,7 +1189,7 @@ kill_safely(os_thread_t os_thread, int signal)
         if (status == 0) {
             return 0;
         } else {
-            lose("cannot raise signal %d, %d %s\n",
+            lose("cannot raise signal %d, %d %s",
                  signal, status, strerror(errno));
         }
 #endif

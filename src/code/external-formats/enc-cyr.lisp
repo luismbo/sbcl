@@ -1,6 +1,6 @@
 (in-package "SB-IMPL")
 
-(define-unibyte-mapping-external-format :koi8-r (:|koi8-r|)
+(define-character-coding/unibyte-mapping (:koi8-r :|koi8-r|)
   (#x80 #x2500) ; BOX DRAWINGS LIGHT HORIZONTAL
   (#x81 #x2502) ; BOX DRAWINGS LIGHT VERTICAL
   (#x82 #x250C) ; BOX DRAWINGS LIGHT DOWN AND RIGHT
@@ -131,7 +131,7 @@
   (#xFF #x042A) ; CYRILLIC CAPITAL LETTER HARD SIGN
 )
 
-(define-unibyte-mapping-external-format :koi8-u (:|koi8-u|)
+(define-character-coding/unibyte-mapping (:koi8-u :|koi8-u|)
   (#x80 #x2500) ; BOX DRAWINGS LIGHT HORIZONTAL
   (#x81 #x2502) ; BOX DRAWINGS LIGHT VERTICAL
   (#x82 #x250C) ; BOX DRAWINGS LIGHT DOWN AND RIGHT
@@ -262,7 +262,7 @@
   (#xFF #x042A) ; CYRILLIC CAPITAL LETTER HARD SIGN
 )
 
-(define-unibyte-mapping-external-format :x-mac-cyrillic (:|x-mac-cyrillic|)
+(define-character-coding/unibyte-mapping (:x-mac-cyrillic :|x-mac-cyrillic|)
   (#x80 #x0410) ; CYRILLIC CAPITAL LETTER A
   (#x81 #x0411) ; CYRILLIC CAPITAL LETTER BE
   (#x82 #x0412) ; CYRILLIC CAPITAL LETTER VE

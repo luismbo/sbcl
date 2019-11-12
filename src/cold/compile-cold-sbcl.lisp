@@ -82,13 +82,12 @@
 
 (setq sb-c::*track-full-called-fnames* :minimal) ; Change this as desired
 
-#+#.(cl:if (cl:find-package "HOST-SB-POSIX") '(and) '(or))
 (defun parallel-make-host-2 (max-jobs)
   (let ((subprocess-count 0)
         (subprocess-list nil)
         stop)
     (labels ((wait ()
-               (multiple-value-bind (pid status) (host-sb-posix:wait)
+               (multiple-value-bind (pid status) (sb-cold::posix-wait)
                  (format t "~&; Subprocess ~D exit status ~D~%"  pid status)
                  (unless (zerop status)
                    (let ((stem (cdr (assoc pid subprocess-list))))
@@ -106,56 +105,71 @@
                          (write-string line)
                          (terpri)))
                  (delete-file f))))
-      (host-sb-ext:disable-debugger)
-      (unwind-protect
-           (do-stems-and-flags (stem flags 2)
-             (unless (position :not-target flags)
-               (when (>= subprocess-count max-jobs)
-                 (wait))
-               (when stop
-                 (return))
-               (let ((pid (host-sb-posix:fork)))
-                 (when (zerop pid)
-                   (let ((pid (host-sb-unix:unix-getpid)))
-                     (let ((*standard-output*
-                            (open (format nil "~d.out" pid)
-                                  :direction :output :if-exists :supersede))
-                           (*error-output*
-                            (open (format nil "~d.err" pid)
-                                  :direction :output :if-exists :supersede)))
-                       (handler-case (target-compile-stem stem flags)
-                         (error (e)
-                           (close *standard-output*)
-                           (close *error-output*)
-                           (sb-cold::exit-process 1))
-                         (:no-error (res)
-                           (declare (ignore res))
-                           (delete-file *standard-output*)
-                           (delete-file *error-output*)
-                           (sb-cold::exit-process 0))))))
-                 (push (cons pid stem) subprocess-list))
-               (incf subprocess-count)
-               ;; Cause the compile-time effects from this file
-               ;; to appear in subsequently forked children.
-               (let ((*compile-for-effect-only* t))
-                 (target-compile-stem stem flags))))
-        (loop (if (plusp subprocess-count) (wait) (return)))
-        (when stop
-          (sb-cold::exit-process 1)))
+      #+sbcl (host-sb-ext:disable-debugger)
+      (sb-cold::with-subprocesses
+        (unwind-protect
+             (do-stems-and-flags (stem flags 2)
+               (unless (position :not-target flags)
+                 (when (>= subprocess-count max-jobs)
+                   (wait))
+                 (when stop
+                   (return))
+                 (let ((pid (sb-cold::posix-fork)))
+                   (when (zerop pid)
+                     (let ((pid (sb-cold::getpid)))
+                       (let ((*standard-output*
+                              (open (format nil "~d.out" pid)
+                                    :direction :output :if-exists :supersede))
+                             (*error-output*
+                              (open (format nil "~d.err" pid)
+                                    :direction :output :if-exists :supersede)))
+                         (handler-case (target-compile-stem stem flags)
+                           (error (e)
+                             (format *error-output* "~a~%" e)
+                             (close *standard-output*)
+                             (close *error-output*)
+                             (sb-cold::exit-subprocess 1))
+                           (:no-error (res)
+                             (declare (ignore res))
+                             (delete-file *standard-output*)
+                             (delete-file *error-output*)
+                             (sb-cold::exit-subprocess 0))))))
+                   (push (cons pid stem) subprocess-list))
+                 (incf subprocess-count)
+                 ;; Cause the compile-time effects from this file
+                 ;; to appear in subsequently forked children.
+                 (let ((*compile-for-effect-only* t))
+                   (target-compile-stem stem flags))))
+          (loop (if (plusp subprocess-count) (wait) (return)))
+          (when stop
+            (sb-cold::exit-process 1))))
       (values))))
 
-;;; Actually compile
-(let ((sb-xc:*compile-print* nil))
-  (if (make-host-2-parallelism)
-      (funcall 'parallel-make-host-2 (make-host-2-parallelism))
-      (let ((total
-             (count-if (lambda (x) (not (find :not-target (cdr x))))
-                       (get-stems-and-flags 2)))
-            (n 0)
-            (sb-xc:*compile-verbose* nil))
-        (with-math-journal
-         (do-stems-and-flags (stem flags 2)
-           (unless (position :not-target flags)
-             (format t "~&[~D/~D] ~A" (incf n) total (stem-remap-target stem))
-             (target-compile-stem stem flags)
-             (terpri)))))))
+;;; See whether we're in individual file mode
+(cond
+  ((boundp 'cl-user::*compile-files*)
+   (let ((files
+          (mapcar (lambda (x) (concatenate 'string "src/" x))
+                  (symbol-value 'cl-user::*compile-files*))))
+     (with-compilation-unit ()
+       (do-stems-and-flags (stem flags 2)
+         (unless (position :not-target flags)
+           (let* ((*compile-for-effect-only* (not (member stem files :test #'string=)))
+                  (sb-xc:*compile-print* (not *compile-for-effect-only*)))
+             (target-compile-stem stem flags)))))))
+  (t
+   ;; Actually compile
+   (let ((sb-xc:*compile-print* nil))
+     (if (make-host-2-parallelism)
+         (funcall 'parallel-make-host-2 (make-host-2-parallelism))
+         (let ((total
+                (count-if (lambda (x) (not (find :not-target (cdr x))))
+                          (get-stems-and-flags 2)))
+               (n 0)
+               (sb-xc:*compile-verbose* nil))
+           (with-math-journal
+            (do-stems-and-flags (stem flags 2)
+              (unless (position :not-target flags)
+                (format t "~&[~D/~D] ~A" (incf n) total (stem-remap-target stem))
+                (target-compile-stem stem flags)
+                (terpri)))))))))

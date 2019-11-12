@@ -59,16 +59,19 @@
                 finally (return (coerce string 'simple-string))))))))
 (instantiate-octets-definition define-ascii->string)
 
-(define-unibyte-external-format :ascii
-    (:us-ascii :ansi_x3.4-1968 :iso-646 :iso-646-us :|646|)
+(define-character-coding/unibyte
+    (:ascii :us-ascii :ansi_x3.4-1968 :iso-646 :iso-646-us :|646|)
+  :out-form
   (if (>= bits 128)
       (external-format-encoding-error stream bits)
       (setf (sap-ref-8 sap tail) bits))
+  :in-form
   (if (>= byte 128)
       (return-from decode-break-reason 1)
       (code-char byte))
-  ascii->string-aref
-  string->ascii)
+  :octets-to-string-symbol ascii->string-aref
+  :string-to-octets-symbol string->ascii)
+
 
 ;;; Latin-1
 
@@ -102,13 +105,15 @@
 ;;; Multiple names for the :ISO{,-}8859-* families are needed because on
 ;;; FreeBSD (and maybe other BSD systems), nl_langinfo("LATIN-1") will
 ;;; return "ISO8859-1" instead of "ISO-8859-1".
-(define-unibyte-external-format :latin-1 (:latin1 :iso-8859-1 :iso8859-1)
+(define-character-coding/unibyte (:latin-1 :latin1 :iso-8859-1 :iso8859-1)
+  :out-form
   (if (>= bits 256)
       (external-format-encoding-error stream bits)
       (setf (sap-ref-8 sap tail) bits))
+  :in-form
   (code-char byte)
-  latin1->string-aref
-  string->latin1)
+  :octets-to-string-symbol latin1->string-aref
+  :string-to-octets-symbol string->latin1)
 
 
 ;;; UTF-8
@@ -382,13 +387,16 @@
           (coerce string 'simple-string))))))
 (instantiate-octets-definition define-utf8->string)
 
-(define-external-format/variable-width (:utf-8 :utf8) t
-  #+sb-unicode (code-char #xfffd) #-sb-unicode #\?
+(define-character-coding/variable-width (:utf-8 :utf8)
+  :output-restart t
+  :replacement-character #+sb-unicode (code-char #xfffd) #-sb-unicode #\?
+  :out-size-expr
   (let ((bits (char-code byte)))
     (cond ((< bits #x80) 1)
           ((< bits #x800) 2)
           ((< bits #x10000) 3)
           (t 4)))
+  :out-expr
   (ecase size
     (1 (setf (sap-ref-8 sap tail) bits))
     (2 (setf (sap-ref-8 sap tail)       (logior #xc0 (ldb (byte 5 6) bits))
@@ -402,11 +410,13 @@
              (sap-ref-8 sap (+ 1 tail)) (logior #x80 (ldb (byte 6 12) bits))
              (sap-ref-8 sap (+ 2 tail)) (logior #x80 (ldb (byte 6 6) bits))
              (sap-ref-8 sap (+ 3 tail)) (logior #x80 (ldb (byte 6 0) bits)))))
+  :in-size-expr
   (1 (cond ((< byte #x80) 1)
            ((< byte #xc2) (return-from decode-break-reason 1))
            ((< byte #xe0) 2)
            ((< byte #xf0) 3)
            (t 4)))
+  :in-expr
   (code-char (ecase size
                (1 byte)
                (2 (let ((byte2 (sap-ref-8 sap (1+ head))))
@@ -433,6 +443,6 @@
                     (dpb byte (byte 3 18)
                          (dpb byte2 (byte 6 12)
                               (dpb byte3 (byte 6 6) byte4)))))))
-  utf8->string-aref
-  string->utf8
+  :octets-to-string-symbol utf8->string-aref
+  :string-to-octets-symbol string->utf8
   #+sb-unicode :base-string-direct-mapping #+sb-unicode t)

@@ -1,7 +1,7 @@
 (in-package "SB-IMPL")
 
-(define-unibyte-mapping-external-format :cp1250
-    (:|cp1250| :windows-1250 :|windows-1250|)
+(define-character-coding/unibyte-mapping
+    (:cp1250 :|cp1250| :windows-1250 :|windows-1250|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -83,8 +83,8 @@
   (#xFF #x02D9) ; DOT ABOVE
 )
 
-(define-unibyte-mapping-external-format :cp1251
-    (:|cp1251| :windows-1251 :|windows-1251|)
+(define-character-coding/unibyte-mapping
+    (:cp1251 :|cp1251| :windows-1251 :|windows-1251|)
   (#x80 #x0402) ; CYRILLIC CAPITAL LETTER DJE
   (#x81 #x0403) ; CYRILLIC CAPITAL LETTER GJE
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -200,8 +200,8 @@
   (#xFF #x044F) ; CYRILLIC SMALL LETTER YA
 )
 
-(define-unibyte-mapping-external-format :cp1252
-    (:|cp1252| :windows-1252 :|windows-1252|)
+(define-character-coding/unibyte-mapping
+    (:cp1252 :|cp1252| :windows-1252 :|windows-1252|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -236,8 +236,8 @@
   (#x9F #x0178) ; LATIN CAPITAL LETTER Y WITH DIAERESIS
 )
 
-(define-unibyte-mapping-external-format :cp1253
-    (:|cp1253| :windows-1253 :|windows-1253|)
+(define-character-coding/unibyte-mapping
+    (:cp1253 :|cp1253| :windows-1253 :|windows-1253|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -347,7 +347,7 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :cp1254 (:|cp1254|)
+(define-character-coding/unibyte-mapping (:cp1254 :|cp1254|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -388,8 +388,8 @@
   (#xFE #x015F) ; LATIN SMALL LETTER S WITH CEDILLA
 )
 
-(define-unibyte-mapping-external-format :cp1255
-    (:|cp1255| :windows-1255 :|windows-1255|)
+(define-character-coding/unibyte-mapping
+    (:cp1255 :|cp1255| :windows-1255 :|windows-1255|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -491,8 +491,8 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :cp1256
-    (:|cp1256| :windows-1256 :|windows-1256|)
+(define-character-coding/unibyte-mapping
+    (:cp1256 :|cp1256| :windows-1256 :|windows-1256|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 #x067E) ; ARABIC LETTER PEH
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -580,8 +580,8 @@
   (#xFF nil)
 )
 
-(define-unibyte-mapping-external-format :cp1257
-    (:|cp1257| :windows-1257 :|windows-1257|)
+(define-character-coding/unibyte-mapping
+    (:cp1257 :|cp1257| :windows-1257 :|windows-1257|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK
@@ -671,8 +671,8 @@
   (#xFF #x02D9) ; DOT ABOVE
 )
 
-(define-unibyte-mapping-external-format :cp1258
-    (:|cp1258| :windows-1258 :|windows-1258|)
+(define-character-coding/unibyte-mapping
+    (:cp1258 :|cp1258| :windows-1258 :|windows-1258|)
   (#x80 #x20AC) ; EURO SIGN
   (#x81 nil)
   (#x82 #x201A) ; SINGLE LOW-9 QUOTATION MARK

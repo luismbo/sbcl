@@ -32,8 +32,10 @@
   (checked-compile '(lambda (x)
                       (ash 1 (position x #(a b c ))))
                    :allow-style-warnings t)
+  ;; The sequence must contain a mixture of symbols and non-symbols
+  ;; to call %FIND-POSITION. If only symbols, it makes no calls.
   (let ((f (checked-compile '(lambda (x)
-                              (position x '(a b c d e f g h i j k l m))))))
+                              (position x '(1 2 3 a b c 4 5 6 d e f g))))))
     ;; test should be EQ, not EQL
     (assert (or (find (symbol-function 'eq)
                       (ctu:find-code-constants f :type 'sb-kernel:simple-fun))
@@ -2449,3 +2451,37 @@
       (locally (declare (optimize (space 0)))
         (stable-sort p ,#'string<)))
    (((copy-seq "acb")) "abc" :test #'equal)))
+
+(with-test (:name :equal-to-eql)
+  (let ((f (checked-compile
+            `(lambda (x y)
+               (equal (the hash-table x) y)))))
+    (assert (not (ctu:find-code-constants f :type 'sb-kernel:fdefn))))
+  (let ((f (checked-compile
+            `(lambda (x y)
+               (equalp (the function x) y)))))
+    (assert (not (ctu:find-code-constants f :type 'sb-kernel:fdefn)))))
+
+(with-test (:name :multiway-branch-duplicate-case)
+  (let ((f (checked-compile '(lambda (b)
+                              (case b
+                                ((1 2) :good)
+                                ((3 2) :bad)))
+                            :allow-style-warnings t)))
+    (assert (eq (funcall f 2) :good))))
+
+(with-test (:name :symbol-case-as-jump-table
+                  :skipped-on (not (or :x86 :x86-64)))
+  ;; Assert that a prototypical example of (CASE symbol ...)
+  ;; was converted to a jump table.
+  (let ((c (sb-kernel:fun-code-header #'sb-debug::parse-trace-options)))
+    (assert (>= (sb-kernel:code-jump-table-words c) 30))))
+
+(with-test (:name :modular-arith-type-derivers)
+  (let ((f (checked-compile
+            `(lambda (x)
+               (declare ((and fixnum
+                              unsigned-byte) x)
+                        (optimize speed))
+               (rem x 10)))))
+        (assert (not (ctu:find-code-constants f :type 'bignum)))))

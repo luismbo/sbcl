@@ -135,8 +135,9 @@
   :prefilter #'prefilter-width
   :printer (lambda (value stream dstate)
              (declare (ignore value))
-             (princ (schar (symbol-name (inst-operand-size dstate)) 0)
-                    stream)))
+             (when stream
+               (princ (schar (symbol-name (inst-operand-size dstate)) 0)
+                      stream))))
 
 ;;; Used to capture the effect of the #x66 operand size override prefix.
 (define-arg-type x66
@@ -156,7 +157,6 @@
 (define-arg-type accum
   :printer (lambda (value stream dstate)
              (declare (ignore value)
-                      (type stream stream)
                       (type disassem-state dstate))
              (print-reg 0 stream dstate)))
 
@@ -189,9 +189,10 @@
                  (setf width :dword))
                (read-signed-suffix (* (size-nbyte width) n-byte-bits) dstate))
   :printer (lambda (value stream dstate)
-             (if (maybe-note-static-symbol value dstate)
-                 (princ16 value stream)
-                 (princ value stream))))
+             (cond ((not stream) (push value (dstate-operands dstate)))
+                   ((maybe-note-static-symbol value dstate)
+                    (princ16 value stream))
+                   (t (princ value stream)))))
 
 (define-arg-type signed-imm-data/asm-routine
   :type 'signed-imm-data
@@ -293,9 +294,10 @@
                   :type 'imm-byte
                   :printer (lambda (value stream dstate)
                              (declare (type (unsigned-byte 8) value)
-                                      (type stream stream)
-                                      (ignore dstate))
-                             (format stream ,format-string value)))))
+                                      (type (or null stream) stream))
+                             (if stream
+                                 (format stream ,format-string value)
+                                 (push value (dstate-operands dstate)))))))
   (define-sse-shuffle-arg-type sse-shuffle-pattern-2-2 "#b~2,'0B")
   (define-sse-shuffle-arg-type sse-shuffle-pattern-8-4 "#4r~4,4,'0R"))
 
@@ -992,8 +994,7 @@
 ;;; A label can refer to things near enough it using the addend.
 (defstruct (label+addend (:constructor make-label+addend (label addend))
                          (:predicate nil)
-                         (:copier nil)
-                         (:include label))
+                         (:copier nil))
   (label nil :type label)
   (addend 0 :type (signed-byte 32)))
 
@@ -1237,8 +1238,7 @@
                    operand)))
           operands))
 
-(defun emit-ea (segment thing reg &key allow-constants (remaining-bytes 0)
-                                       xmm-index)
+(defun emit-ea (segment thing reg &key (remaining-bytes 0) xmm-index)
   (when (register-p reg)
     (setq reg (reg-encoding reg segment)))
   (etypecase thing
@@ -1247,14 +1247,8 @@
     (tn
      (ecase (sb-name (sc-sb (tn-sc thing)))
        (stack
-        ;; Could this be refactored to fall into the EA case below instead
-        ;; of consing a new EA? Probably.  Does it matter? Probably not.
         (emit-ea segment (ea (frame-byte-offset (tn-offset thing)) rbp-tn) reg))
        (constant
-        (unless allow-constants
-          ;; Why?
-          (error
-           "Constant TNs can only be directly used in MOV, PUSH, and CMP."))
         ;; To access the constant at index 5 out of 6 constants, that's simply
         ;; word index -1 from the origin label, and so on.
         (emit-ea segment
@@ -1314,11 +1308,7 @@
              ((or (= mod #b10) (null base))
               (if (fixup-p disp)
                   (emit-absolute-fixup segment disp)
-                  (emit-signed-dword segment disp))))))
-    (fixup
-        (emit-mod-reg-r/m-byte segment #b00 reg #b100)
-        (emit-sib-byte segment 0 #b100 #b101)
-        (emit-absolute-fixup segment thing))))
+                  (emit-signed-dword segment disp))))))))
 
 ;;;; utilities
 
@@ -1540,17 +1530,15 @@
                            ;; 64-bit immediate. Instruction size: 10 bytes.
                            (emit-byte+reg segment #xB8 dst)
                            (emit-qword segment src))))
-                  ((and (fixup-p src)
-                        (member (fixup-flavor src)
-                                '(:named-call :static-call :assembly-routine
-                                  :layout :immobile-symbol :foreign)))
+                  ((fixup-p src) ; treat as a 32-bit unsigned integer
+                   ;; But imm-to-reg could take a 64-bit operand if needed.
                    (emit-prefixes segment dst nil :dword)
                    (emit-byte+reg segment #xB8 dst)
                    (emit-absolute-fixup segment src))
                   (t
                    (emit-prefixes segment src dst size)
                    (emit-byte segment (opcode+size-bit #x8A size))
-                   (emit-ea segment src dst :allow-constants t))))
+                   (emit-ea segment src dst))))
         ((integerp src) ; imm to memory
             ;; C7 only deals with 32 bit immediates even if the
             ;; destination is a 64-bit location. The value is
@@ -1571,14 +1559,9 @@
             (emit-prefixes segment dst src size)
             (emit-byte segment (opcode+size-bit #x88 size))
             (emit-ea segment dst src))
-        ((fixup-p src)
-            ;; MOV to memory take at most a 32-bit immediate arg.
-            ;; The acceptable fixup flavors are enumerated here.
-            ;; The linkage table and immobile spaces reside at
-            ;; low enough addresses that this works.
-            (aver (member (fixup-flavor src)
-                          '(:foreign :foreign-dataref :symbol-tls-index
-                            :assembly-routine :layout :immobile-symbol)))
+        ((fixup-p src) ; equivalent to 32-bit unsigned integer
+            ;; imm-to-mem can not take a 64-bit operand, but could sign-extend
+            ;; to 8 bytes, which is probably not what you want.
             (emit-prefixes segment dst nil size)
             (emit-byte segment #xC7)
             (emit-ea segment dst #b000)
@@ -1657,7 +1640,7 @@
     (:printer move-with-extension ((op #b1011011)))
     (:emitter (emit* segment sizes dst src nil))))
 
-(flet ((emit* (segment thing gpr-opcode mem-opcode subcode allowp)
+(flet ((emit* (segment thing gpr-opcode mem-opcode subcode)
          (let ((size (or (operand-size thing) :qword)))
            (aver (or (eq size :qword) (eq size :word)))
            (emit-prefixes segment thing nil (if (eq size :word) :word :do-not-set))
@@ -1665,7 +1648,7 @@
                   (emit-byte+reg segment gpr-opcode thing))
                  (t
                   (emit-byte segment mem-opcode)
-                  (emit-ea segment thing subcode :allow-constants allowp))))))
+                  (emit-ea segment thing subcode))))))
   (define-instruction push (segment src)
     ;; register
     (:printer reg-no-width-default-qword ((op #b01010)))
@@ -1694,12 +1677,12 @@
             (emit-byte segment #x68)
             (emit-absolute-fixup segment src))
            (t
-            (emit* segment src #x50 #xFF 6 t)))))
+            (emit* segment src #x50 #xFF 6)))))
 
   (define-instruction pop (segment dst)
     (:printer reg-no-width-default-qword ((op #b01011)))
     (:printer reg/mem-default-qword ((op '(#x8F 0))))
-    (:emitter (emit* segment dst #x58 #x8F 0 nil))))
+    (:emitter (emit* segment dst #x58 #x8F 0))))
 
 ;;; Compared to x86 we need to take two particularities into account
 ;;; here:
@@ -1819,6 +1802,7 @@
   (def popf  #x9D) ; Pop flags.
   (def sahf  #x9E) ; Store AH into flags.
   (def lahf  #x9F) ; Load AH from flags.
+  (def icebp #xF1) ; ICE breakpoint
   (def hlt   #xF4) ; Halt
   (def cmc   #xF5) ; Complement Carry Flag.
   (def clc   #xF8) ; Clear Carry Flag.
@@ -1831,7 +1815,7 @@
 
 ;;;; arithmetic
 
-(flet ((emit* (name segment maybe-size dst src lockp opcode allowp)
+(flet ((emit* (name segment maybe-size dst src lockp opcode)
          (let ((size (cond ((is-size-p maybe-size) maybe-size)
                            (t
                             (shiftf lockp src dst maybe-size)
@@ -1842,7 +1826,7 @@
             ((and (neq size :byte) (plausible-signed-imm8-operand-p src size))
              (emit-prefixes segment dst nil size :lock lockp)
              (emit-byte segment #x83)
-             (emit-ea segment dst opcode :allow-constants allowp)
+             (emit-ea segment dst opcode)
              (emit-byte segment it))
             ((or (integerp src)
                  (and (fixup-p src)
@@ -1854,7 +1838,7 @@
                                                 size)))
                    (t
                     (emit-byte segment (opcode+size-bit #x80 size))
-                    (emit-ea segment dst opcode :allow-constants allowp)))
+                    (emit-ea segment dst opcode)))
              (if (fixup-p src)
                  (emit-absolute-fixup segment src)
                  (let ((imm (or (and (eq size :qword)
@@ -1869,8 +1853,8 @@
                (emit-prefixes segment reg/mem reg size :lock lockp)
                (emit-byte segment
                           (opcode+size-bit (dpb opcode (byte 3 3) dir-bit) size))
-               (emit-ea segment reg/mem reg :allow-constants allowp)))))))
-  (macrolet ((define (name subop &optional allow-constants)
+               (emit-ea segment reg/mem reg)))))))
+  (macrolet ((define (name subop)
                `(define-instruction ,name (segment maybe-size dst &optional src prefix)
                   (:printer accum-imm ((op ,(dpb subop (byte 3 2) #b0000010))))
                   (:printer reg/mem-imm ((op '(#b1000000 ,subop))))
@@ -1879,13 +1863,12 @@
                   (:printer reg/mem-imm ((op '(#b1000001 ,subop)) (width 1)
                                          (imm nil :type 'signed-imm-byte)))
                   (:printer reg-reg/mem-dir ((op ,(dpb subop (byte 3 1) #b000000))))
-                  (:emitter (emit* ,(string name) segment maybe-size dst src prefix
-                                   ,subop ,allow-constants)))))
+                  (:emitter (emit* ,(string name) segment maybe-size dst src prefix ,subop)))))
     (define add #b000)
     (define adc #b010)
     (define sub #b101)
     (define sbb #b011)
-    (define cmp #b111 t)
+    (define cmp #b111)
     (define and #b100)
     (define or  #b001)
     (define xor #b110)))
@@ -2369,7 +2352,7 @@
      (emit-prefixes segment src dst size))
    (emit-byte segment #x0F)
    (emit-byte segment (dpb (conditional-opcode cond) (byte 4 0) #b01000000))
-   (emit-ea segment src dst :allow-constants t)))
+   (emit-ea segment src dst)))
 
 ;;;; conditional byte set
 
@@ -2399,16 +2382,13 @@
 ;;;; interrupt instructions
 
 (define-instruction break (segment &optional (code nil codep))
-  #-ud2-breakpoints (:printer byte-imm ((op (or #+int4-breakpoints #xCE #xCC)))
-                               '(:name :tab code) :control #'break-control)
-  #+ud2-breakpoints (:printer word-imm ((op #x0B0F))
-                               '(:name :tab code) :control #'break-control)
+  (:printer byte-imm ((op #xCC)) :default :print-name 'int3 :control #'break-control)
+  (:printer word-imm ((op #x0B0F)) :default :print-name 'ud2 :control #'break-control)
+  ;; INTO always signals SIGILL in 64-bit code. Using it avoids conflicting with gdb's
+  ;; use of sigtrap and shortens the error break by 1 byte relative to UD2.
+  (:printer byte-imm ((op #xCE)) :default :print-name 'into :control #'break-control)
   (:emitter
    #-ud2-breakpoints (emit-byte segment (or #+int4-breakpoints #xCE #xCC))
-   ;; On darwin, trap handling via SIGTRAP is unreliable, therefore we
-   ;; throw a sigill with 0x0b0f instead and check for this in the
-   ;; SIGILL handler and pass it on to the sigtrap handler if
-   ;; appropriate
    #+ud2-breakpoints (emit-word segment #x0B0F)
    (when codep (emit-byte segment (the (unsigned-byte 8) code)))))
 
@@ -2421,6 +2401,20 @@
       (emit-byte segment (if (eql number 4) #xCE #xCC)))
      ((unsigned-byte 8)
       (emit-bytes segment #xCD number)))))
+
+(define-instruction ud0 (segment reg rm)
+  (:printer ext-reg-reg/mem-no-width ((op #xFF)))
+  (:emitter
+   (emit-prefixes segment rm reg :dword)
+   (emit-bytes segment #x0F #xFF)
+   (emit-ea segment rm reg)))
+
+(define-instruction ud1 (segment reg rm)
+  (:printer ext-reg-reg/mem-no-width ((op #xB9)))
+  (:emitter
+   (emit-prefixes segment rm reg :dword)
+   (emit-bytes segment #x0F #xB9)
+   (emit-ea segment rm reg)))
 
 (define-instruction iret (segment)
   (:printer byte ((op #xCF)))
@@ -2912,7 +2906,8 @@
 #-sb-xc-host
 (defun print-mov[dq]-opcode  (dchunk inst stream dstate)
   (declare (ignore dchunk inst))
-  (princ (if (dstate-getprop dstate +rex-w+) 'movq 'movd) stream))
+  (when stream
+    (princ (if (dstate-getprop dstate +rex-w+) 'movq 'movd) stream)))
 
 (flet ((move-xmm<->gpr (segment dst src size)
          ;; We no longer AVER that the size of the src/dst is exactly :DWORD.
@@ -3357,6 +3352,12 @@
 ;;;; Late VM definitions
 
 (defun canonicalize-inline-constant (constant &aux (alignedp nil))
+  ;; FIXME: It's slightly wonky to conflate alignment with size.
+  ;; It works only because the architecture is little-endian, so when we dump a
+  ;; single- or double-float as an :oword, the zero padding goes where it should.
+  ;; A saner approach would have the alignment not necessarily taken directly from
+  ;; the size, but merely defaulted to the size, with the option to overalign,
+  ;; or potentially underalign for denser packing if desired.
   (let ((first (car constant)))
     (when (eql first :aligned)
       (setf alignedp t)
@@ -3386,12 +3387,12 @@
       ((:byte :word :dword :qword)
        (aver (integerp value))
        (cons type value))
-      ((:base-char)
-       #+sb-unicode (aver (typep value 'base-char))
-       (cons :byte (char-code value)))
-      ((:character)
-       (aver (characterp value))
-       (cons :dword (char-code value)))
+      ((:oword :sse)
+       (aver (integerp value))
+       (cons :oword value))
+      ((:hword :avx2)
+       (aver (integerp value))
+       (cons :hword value))
       ((:single-float)
        (aver (typep value 'single-float))
        (cons (if alignedp :oword :dword)
@@ -3407,38 +3408,67 @@
                   (logior (ash (single-float-bits (imagpart value)) 32)
                           (ldb (byte 32 0)
                                (single-float-bits (realpart value)))))))
-      ((:oword :sse)
-       (aver (integerp value))
-       (cons :oword value))
-      ((:hword :avx2)
-       (aver (integerp value))
-       (cons :hword value))
       ((:complex-double-float)
        (aver (typep value '(complex double-float)))
        (cons :oword
              (logior (ash (ldb (byte 64 0) (double-float-bits (imagpart value))) 64)
-                     (ldb (byte 64 0) (double-float-bits (realpart value)))))))))
+                     (ldb (byte 64 0) (double-float-bits (realpart value))))))
+      ((:jump-table)
+       (cons :jump-table value)))))
 
 (defun inline-constant-value (constant)
   (declare (ignore constant)) ; weird!
   (let ((label (gen-label)))
     (values label (rip-relative-ea label))))
 
+(defun align-of (constant)
+  (case (car constant)
+    (:jump-table n-word-bytes)
+    (t (size-nbyte (car constant)))))
+
 (defun sort-inline-constants (constants)
-  (stable-sort constants #'> :key (lambda (constant)
-                                    (size-nbyte (caar constant)))))
+  ;; Each constant is ((size . bits) . label)
+  (stable-sort constants #'> :key (lambda (x) (align-of (car x)))))
+
+(define-instruction .qword (segment &rest vals)
+  (:emitter
+   (dolist (val vals)
+     (cond ((label-p val)
+            ;; note a fixup prior to writing the backpatch so that the fixup's
+            ;; position is the location counter at the patch point
+            ;; (i.e. prior to skipping 8 bytes)
+            ;; This fixup is *not* recorded in code->fixups. Instead, trans_code()
+            ;; will fixup a counted initial subsequence of unboxed words.
+            (note-fixup segment :absolute64 (make-fixup nil :code-object 0))
+            (emit-back-patch
+             segment
+             8
+             (lambda (segment posn)
+               (declare (ignore posn)) ; don't care where the fixup itself is
+               (emit-qword segment
+                           (+ (component-header-length)
+                              (- (segment-header-skew segment))
+                              (- other-pointer-lowtag)
+                              (label-position val))))))
+           (t
+            (emit-qword segment val))))))
 
 (defun emit-inline-constant (section constant label)
-  (let ((size (size-nbyte (car constant))))
+  ;; See comment at CANONICALIZE-INLINE-CONSTANT about how we are
+  ;; careless with the distinction between alignment and size.
+  ;; Such slop would not work for big-endian machines.
+  (let ((size (align-of constant)))
     (emit section
           `(.align ,(integer-length (1- size)))
           label
-          ;; Could add pseudo-ops for .WORD, .INT, .QUAD, .OCTA just like gcc has.
-          ;; But it works fine to emit as a sequence of bytes
-          `(.byte ,@(let ((val (cdr constant)))
-                      (loop repeat size
-                            collect (prog1 (ldb (byte 8 0) val)
-                                      (setf val (ash val -8)))))))))
+          (if (eq (car constant) :jump-table)
+              `(.qword ,@(cdr constant))
+              ;; Could add pseudo-ops for .WORD, .INT, .OCTA just like gcc has.
+              ;; But it works fine to emit as a sequence of bytes
+              `(.byte ,@(let ((val (cdr constant)))
+                          (loop repeat size
+                                collect (prog1 (ldb (byte 8 0) val)
+                                          (setf val (ash val -8))))))))))
 
 (defun sb-assem::%mark-used-labels (operand)
   (when (typep operand 'ea)
@@ -3450,18 +3480,18 @@
         (setf (label-usedp (label+addend-label disp)) t))))))
 
 (defun sb-c::branch-opcode-p (mnemonic)
-  (member mnemonic (load-time-value
-                    (mapcar #'sb-assem::op-encoder-name
-                            '(call ret jmp jrcxz break int iret
-                              loop loopz loopnz syscall
-                              byte word dword)) ; unexplained phenomena
-                    t)))
+  (case mnemonic
+    ((call ret jmp jrcxz break int iret
+      loop loopz loopnz syscall
+      byte word dword) ; unexplained phenomena
+     t)))
 
 ;; Replace the INST-INDEXth element in INST-BUFFER with an instruction
 ;; to store a coverage mark in the OFFSETth byte beyond LABEL.
-(defun sb-c::replace-coverage-instruction (inst-buffer inst-index label offset)
-  (setf (svref inst-buffer inst-index)
-        `(mov :byte ,(rip-relative-ea label offset) 1)))
+(defun sb-c::replace-coverage-instruction (statement label offset)
+  (setf (stmt-mnemonic statement) 'mov
+        (stmt-operands statement) `(:byte ,(rip-relative-ea label offset) 1)))
+
 
 ;;; This constructor is for broken 3rd-party library code. It's fine that we have
 ;;; some degree of backward-compatibility, but it's another entirely to say that

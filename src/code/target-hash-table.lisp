@@ -785,11 +785,10 @@ multiple threads accessing the same hash-table without locking."
     ;;  (1) every usable pair was at some point filled (so HWM = SIZE)
     ;;  (2) no cells below HWM are available (so COUNT = SIZE)
     (aver (= hwm (hash-table-size table)))
-    (unless (hash-table-weak-p table)
-      ;; Consider a GC that occurs after we've decided that the table
-      ;; is too small, but before getting here. There could be some smashed
-      ;; cells, and if so, the count will be less than the SIZE.
-      (aver (= (hash-table-count table) hwm)))
+    (when (and (not (hash-table-weak-p table)) (/= (hash-table-count table) hwm))
+      ;; If the table is not weak, then every cell pair has to be in use
+      ;; as a precondition to resizing. If weak, this might not be true.
+      (signal-corrupt-hash-table table))
 
     ;; Copy over the hash-vector,
     ;; This is done early because when GC scans the new vector, it needs to see
@@ -1728,6 +1727,23 @@ table itself."
     :rehash-size      ',(hash-table-rehash-size      hash-table)
     :rehash-threshold ',(hash-table-rehash-threshold hash-table)
     :weakness         ',(hash-table-weakness         hash-table)))
+
+;;; Return an association list representing the same data as HASH-TABLE.
+;;; Iterate downward so that PUSH creates the result in insertion order.
+;;; One the one hand, this should not to be construed as a guarantee about
+;;; the order, but on the other, it is convenient to see key/values in the
+;;; same order as insertion, and moreover, preserving that order makes
+;;; %STUFF-HASH-TABLE produce the same k/v vector.
+(defun %hash-table-alist (hash-table)
+  (let ((result nil))
+    (let ((kvv (hash-table-pairs hash-table)))
+      (do ((i (* 2 (kv-vector-high-water-mark kvv)) (- i 2)))
+          ((= i 0))
+        (let ((k (aref kvv i))
+              (v (aref kvv (1+ i))))
+          (unless (or (empty-ht-slot-p k) (empty-ht-slot-p v))
+            (push (cons k v) result)))))
+    result))
 
 ;;; Stuff an association list into HASH-TABLE. Return the hash table,
 ;;; so that we can use this for the *PRINT-READABLY* case in

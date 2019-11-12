@@ -233,7 +233,7 @@
   ;; (to the debugger) locations in this block
   (locations nil :type list))
 
-(defprinter (ir2-block)
+(defprinter (ir2-block :identity t)
   (pushed :test pushed)
   (popped :test popped)
   (start-vop :test start-vop)
@@ -323,19 +323,20 @@
   ;; constant pool. A non-immediate :CONSTANT TN with offset 0 refers
   ;; to the constant in element 0, etc. Normal constants are
   ;; represented by the placing the CONSTANT leaf in this vector. A
-  ;; load-time constant is distinguished by being a cons (KIND .
-  ;; WHAT). KIND is a keyword indicating how the constant is computed,
-  ;; and WHAT is some context.
+  ;; load-time constant is distinguished by being a cons
+  ;; (KIND WHAT TN).
+  ;; KIND is a keyword indicating how the constant is computed, and
+  ;; WHAT is some context.
   ;;
   ;; These load-time constants are recognized:
   ;;
-  ;; (:entry . <function>)
+  ;; (:entry <function>)
   ;;    Is replaced by the code pointer for the specified function.
   ;;    This is how compiled code (including DEFUN) gets its hands on
   ;;    a function. <function> is the XEP lambda for the called
   ;;    function; its LEAF-INFO should be an ENTRY-INFO structure.
   ;;
-  ;; (:label . <label>)
+  ;; (:label <label>)
   ;;    Is replaced with the byte offset of that label from the start
   ;;    of the code vector (including the header length.)
   ;;
@@ -506,7 +507,7 @@
 (def!struct (vop (:constructor make-vop (block node info args results))
                  (:copier nil))
   ;; VOP-INFO structure containing static info about the operation
-  (info nil :type (or vop-info null))
+  (info nil :type vop-info)
   ;; the IR2-BLOCK this VOP is in
   (block (missing-arg) :type ir2-block)
   ;; VOPs evaluated after and before this one. Null at the
@@ -714,7 +715,8 @@
   ;; a vector of the various targets that should be done. Each element
   ;; encodes the source ref (shifted 8, it is also encoded in
   ;; MAX-VOP-TN-REFS) and the dest ref index.
-  (targets nil :type (or null (simple-array (unsigned-byte 16) 1))))
+  (targets nil :type (or null (simple-array (unsigned-byte 16) 1)))
+  (optimizer nil :type (or null function)))
 
 ;; These printers follow the definition of VOP-INFO because they
 ;; want to inline VOP-INFO-NAME, and it's less code to move them here

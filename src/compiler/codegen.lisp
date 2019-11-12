@@ -17,11 +17,25 @@
 ;;;; utilities used during code generation
 
 ;;; the number of bytes used by the code object header
+
+#-sb-xc-host
 (defun component-header-length (&optional
                                 (component *component-being-compiled*))
   (let* ((2comp (component-info component))
          (constants (ir2-component-constants 2comp)))
     (ash (align-up (length constants) code-boxed-words-align) sb-vm:word-shift)))
+
+;;; KLUDGE: the assembler can not emit backpatches comprising jump tables without
+;;; knowing the boxed code header length. But there is no compiler IR2 metaobject,
+;;; for SB-FASL:*ASSEMBLER-ROUTINES*. We have to return a fixed answer for that.
+#+sb-xc-host
+(defun component-header-length ()
+  (if (boundp '*component-being-compiled*)
+      (let ((component *component-being-compiled*))
+        (let* ((2comp (component-info component))
+               (constants (ir2-component-constants 2comp)))
+          (ash (align-up (length constants) code-boxed-words-align) sb-vm:word-shift)))
+      (* sb-vm:n-word-bytes 4)))
 
 ;;; the size of the NAME'd SB in the currently compiled component.
 ;;; This is useful mainly for finding the size for allocating stack
@@ -130,6 +144,39 @@
 (progn (defun sb-vm:sort-inline-constants (constants) constants)
        (defun sb-vm:emit-inline-constant (&rest args)
          (error "EMIT-INLINE-CONSTANT called with ~S" args)))
+;;; Emit the subset of inline constants which represent jump tables
+;;; and remove those constants so that they don't get emitted again.
+(defun emit-jump-tables ()
+  ;; Other backends will probably need relative jump tables instead
+  ;; of absolute tables because of the problem of needing to load
+  ;; the LIP register prior to loading an arbitrary PC.
+  #+(or x86 x86-64)
+  (let* ((asmstream *asmstream*)
+         (constants (asmstream-constant-vector asmstream))
+         (section (asmstream-data-section asmstream))
+         (nwords 0))
+    (collect ((jump-tables) (other))
+      (dovector (constant constants)
+        ;; Constant is ((category . data) . label)
+        (cond ((eq (caar constant) :jump-table)
+               (incf nwords (length (cdar constant)))
+               (jump-tables constant))
+              (t
+               (other constant))))
+      ;; Preface the unboxed data with a count of jump-table words,
+      ;; including the count itself as 1 word.
+      ;; On average this will add another padding word half of the time
+      ;; depending on the number of boxed constants. We could reduce space
+      ;; by storing one bit in the header indicating whether or not there
+      ;; is a jump table. I don't think that's worth the trouble.
+      (emit section `(.lispword ,(1+ nwords)))
+      (when (plusp nwords)
+        (dolist (constant (jump-tables))
+          (sb-vm:emit-inline-constant section (car constant) (cdr constant)))
+        (let ((nremaining (length (other))))
+          (adjust-array constants nremaining
+                        :fill-pointer nremaining
+                        :initial-contents (other)))))))
 ;;; Return T if and only if there were any constants emitted.
 (defun emit-inline-constants ()
   (let* ((asmstream *asmstream*)
@@ -242,6 +289,8 @@
             ;; on 8 byte boundaries we cannot guarantee proper loop alignment
             ;; there (yet.)  Only x86-64 does something with ALIGNP, but
             ;; it may be useful in the future.
+            ;; FIXME: see comment in ASSEMBLE-SECTIONS - we *can* enforce larger
+            ;; alignment than the size of a cons cell.
             (let ((alignp (let ((cloop (block-loop 1block)))
                             (when (and cloop
                                        (loop-tail cloop)
@@ -281,12 +330,14 @@
                   (t
                    (funcall gen vop)))))))
 
-    ;; Truncate the final assembly code buffer to length
-    (sb-assem::truncate-section-to-length (asmstream-code-section asmstream))
-
+    ;; Jump tables precede the coverage mark bytes to simplify locating
+    ;; them in trans_code().
+    (emit-jump-tables)
+    ;; Todo: can we implement the flow-based aspect of coverage mark compression
+    ;; in IR2 instead of waiting until assembly generation?
     (coverage-mark-lowering-pass component asmstream)
-
     (emit-inline-constants)
+
     (let* ((info (component-info component))
            (simple-fun-labels
             (mapcar #'entry-info-offset (ir2-component-entries info)))
@@ -330,36 +381,32 @@
         ;; vector of lists of original source paths covered
         (src-paths (make-array 10 :fill-pointer 0))
         (previous-mark))
-    (dolist (buffer (reverse (sb-assem::section-buf-chain
-                              (asmstream-code-section asmstream))))
-      (dotimes (i (length buffer))
-        (let ((item (svref buffer i)))
-          (typecase item
-           (label
-            (when (label-usedp item) ; control can transfer to here
-              (setq previous-mark nil)))
-           (function ; this can do anything, who knows
-            (setq previous-mark nil))
-           (t
-            (let ((mnemonic (first item)))
-              (when (vop-p mnemonic)
-                (pop item)
-                (setq mnemonic (first item)))
-              (cond ((branch-opcode-p mnemonic) ; control flow kills mark combining
-                     (setq previous-mark nil))
-                    ((eq mnemonic '.coverage-mark)
-                     (let ((path (second item)))
-                       (cond ((not previous-mark) ; record a new path
-                              (let ((mark-index
-                                     (vector-push-extend (list path) src-paths)))
-                                ;; have the backend lower it into a real instruction
-                                (replace-coverage-instruction buffer i label mark-index))
-                              (setq previous-mark t))
-                             (t ; record that the already-emitted mark pertains
-                                ; to an additional source path
-                              (push path (elt src-paths (1- (fill-pointer src-paths))))
-                              ;; turn this line into a (virtual) no-op
-                              (rplaca item '.comment))))))))))))
+    (do ((statement (stmt-next (sb-assem::section-head (asmstream-code-section asmstream)))
+                    (stmt-next statement)))
+        ((null statement))
+      (dolist (item (ensure-list (stmt-labels statement)))
+        (when (label-usedp item) ; control can transfer to here
+          (setq previous-mark nil)))
+      (let ((mnemonic (stmt-mnemonic statement)))
+        (if (functionp mnemonic) ; this can do anything, who knows
+            (setq previous-mark nil)
+            (cond ((branch-opcode-p mnemonic) ; control flow kills mark combining
+                   (setq previous-mark nil))
+                  ((eq mnemonic '.coverage-mark)
+                   (let ((path (car (stmt-operands statement))))
+                     (cond ((not previous-mark) ; record a new path
+                            (let ((mark-index
+                                   (vector-push-extend (list path) src-paths)))
+                              ;; have the backend lower it into a real instruction
+                              (replace-coverage-instruction statement label mark-index))
+                            (setq previous-mark statement))
+                           (t ; record that the already-emitted mark pertains
+                            ;; to an additional source path
+                            (push path (elt src-paths (1- (fill-pointer src-paths))))
+                            (add-stmt-labels previous-mark (stmt-labels statement))
+                            (let ((predecessor (stmt-prev statement)))
+                              (delete-stmt statement)
+                              (setq statement predecessor))))))))))
     ;; Allocate space in the data section for coverage marks
     (let ((mark-index (length src-paths)))
       (when (plusp mark-index)

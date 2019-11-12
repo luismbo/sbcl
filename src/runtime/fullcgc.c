@@ -80,7 +80,7 @@ static page_index_t free_page;
 static void* get_free_page() {
     --free_page;
     if (free_page < next_free_page)
-        lose("Needed more space to GC\n");
+        lose("Needed more space to GC");
     page_table[free_page].type = UNBOXED_PAGE_FLAG;
     char* mem = page_address(free_page);
     zero_dirty_pages(free_page, free_page);
@@ -328,7 +328,7 @@ static void trace_object(lispobj* where)
     /* on x86[-64], closure->fun is a fixnum-qua-pointer. Convert it to a lisp
      * pointer to mark it, but not on platforms where it's already a descriptor */
     case CLOSURE_WIDETAG:
-        gc_mark_obj(((struct closure*)where)->fun - FUN_RAW_ADDR_OFFSET);
+        gc_mark_obj(fun_taggedptr_from_self(((struct closure*)where)->fun));
         scan_from = 2;
         break; // scan slots normally
 #endif

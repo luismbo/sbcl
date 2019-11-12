@@ -18,8 +18,7 @@
 
 ;;; This gets called by LOAD to resolve newly positioned objects
 ;;; with things (like code instructions) that have to refer to them.
-;;; Return :ABSOLUTE if an absolute fixup needs to be recorded in %CODE-FIXUPS,
-;;; and return :RELATIVE if a relative fixup needs to be recorded.
+;;; Return KIND  if the fixup needs to be recorded in %CODE-FIXUPS.
 ;;; The code object we're fixing up is pinned whenever this is called.
 (defun fixup-code-object (code offset fixup kind flavor)
   (declare (type index offset) (ignorable flavor))
@@ -29,29 +28,26 @@
                        (signed-sap-ref-32 sap offset))
                    fixup)))
     (ecase kind
-        (:absolute64
+      (:absolute64
          ;; Word at sap + offset contains a value to be replaced by
          ;; adding that value to fixup.
          (setf (sap-ref-64 sap offset) fixup))
-        (:absolute
+      (:absolute
          ;; Word at sap + offset contains a value to be replaced by
          ;; adding that value to fixup.
          (setf (sap-ref-32 sap offset) fixup))
-        (:relative
+      (:relative
          ;; Fixup is the actual address wanted.
          ;; Replace word with value to add to that loc to get there.
          ;; In the #-immobile-code case, there's nothing to assert.
-         ;; Relative fixups pretty much can't happen.
+         ;; Relative fixups don't exist with movable code.
          #+immobile-code
          (unless (immobile-space-obj-p code)
            (error "Can't compute fixup relative to movable object ~S" code))
          (setf (signed-sap-ref-32 sap offset)
-               (etypecase fixup
-                 (integer
-                  ;; JMP/CALL are relative to the next instruction,
-                  ;; so add 4 bytes for the size of the displacement itself.
-                  (- fixup
-                     (the (unsigned-byte 64) (+ (sap-int sap) offset 4)))))))))
+               ;; JMP/CALL are relative to the next instruction,
+               ;; so add 4 bytes for the size of the displacement itself.
+               (- fixup (sap-int (sap+ sap (+ offset 4))))))))
   ;; An absolute fixup is stored in the code header's %FIXUPS slot if it
   ;; references an immobile-space (but not static-space) object.
   ;; Note that:
@@ -75,7 +71,7 @@
        (if (eq kind :relative) :relative))))
   nil) ; non-immobile-space builds never record code fixups
 
-#+(or darwin linux openbsd win32 sunos)
+#+(or darwin linux openbsd win32 sunos (and freebsd x86-64))
 (define-alien-routine ("os_context_float_register_addr" context-float-register-addr)
   (* unsigned) (context (* os-context-t)) (index int))
 
@@ -84,11 +80,11 @@
 
 (defun context-float-register (context index format)
   (declare (ignorable context index))
-  #-(or darwin linux openbsd win32 sunos)
+  #-(or darwin linux openbsd win32 sunos (and freebsd x86-64))
   (progn
     (warn "stub CONTEXT-FLOAT-REGISTER")
     (coerce 0 format))
-  #+(or darwin linux openbsd win32 sunos)
+  #+(or darwin linux openbsd win32 sunos (and freebsd x86-64))
   (let ((sap (alien-sap (context-float-register-addr context index))))
     (ecase format
       (single-float
@@ -156,10 +152,25 @@
   (let* ((pc (context-pc context))
          (trap-number (sap-ref-8 pc 0)))
     (declare (type system-area-pointer pc))
-    (if (= trap-number invalid-arg-count-trap)
-        (values #.(error-number-or-lose 'invalid-arg-count-error)
-                '(#.arg-count-sc))
-        (sb-kernel::decode-internal-error-args (sap+ pc 1) trap-number))))
+    (cond ((= trap-number invalid-arg-count-trap)
+           (values #.(error-number-or-lose 'invalid-arg-count-error)
+                   '(#.arg-count-sc)))
+          #+linux
+          ((= trap-number uninitialized-load-trap)
+           (values #.(error-number-or-lose 'uninitialized-memory-error)
+                   (locally
+                       (declare (optimize (safety 0)))
+                     (let* ((data (sap-ref-8 pc 1)) ; encodes dst register and size
+                            (value (sb-vm:context-register context (ash data -2)))
+                            (nbytes (ash 1 (logand data #b11)))
+                            ;; EMIT-SAP-REF always loads the EA into TEMP-REG-TN
+                            ;; which points to the shadow, not the user memory now.
+                            (ea (logxor (sb-vm:context-register
+                                         context (tn-offset sb-vm::temp-reg-tn))
+                                        msan-mem-to-shadow-xor-const)))
+                       `(:raw ,ea ,nbytes ,value)))))
+          (t
+           (sb-kernel::decode-internal-error-args (sap+ pc 1) trap-number)))))
 
 
 #+immobile-code
@@ -191,6 +202,8 @@
                      (setf (sap-ref-32 sap 7) (logior (ash disp8 24) #x408B48))
                      11))))
         (setf (sap-ref-32 sap i) #xFD60FF))) ; JMP [RAX-3]
+    ;; Verify that the jump table size reads as  0.
+    (aver (zerop (code-jump-table-words code)))
     ;; It is critical that there be a trailing 'uint16' of 0 in this object
     ;; so that CODE-N-ENTRIES reports 0.  By luck, there is exactly enough
     ;; room in the object to hold two 0 bytes. It would be easy enough to enlarge
@@ -270,7 +283,8 @@
 
 #+immobile-space
 (defun alloc-immobile-fdefn ()
-  (or (and (= (alien-funcall (extern-alien "lisp_code_in_elf" (function int))) 1)
+  (or #+nil ; Avoid creating new objects in the text segment for now
+      (and (= (alien-funcall (extern-alien "lisp_code_in_elf" (function int))) 1)
            (allocate-immobile-obj (* fdefn-size n-word-bytes)
                                   (logior (ash undefined-fdefn-header 16)
                                           fdefn-widetag) ; word 0

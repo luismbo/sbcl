@@ -210,6 +210,7 @@
  ("src/code/pred" :not-host)
  ("src/compiler/generic/pinned-objects" :not-host)
 
+ ("src/code/string-hash")
  ("src/code/target-sxhash" :not-host) ; needs most-fooative-foo-float constants
 
  ("src/code/list"   :not-host)
@@ -250,8 +251,10 @@
 
  ("src/code/symbol"        :not-host)
  ("src/code/late-cas"      :not-host)
- ("src/code/fd-stream"     :not-host)
- ("src/code/stream"        :not-host)
+
+ ("src/code/external-format" :not-host)
+ ("src/code/fd-stream"       :not-host)
+ ("src/code/stream"          :not-host)
  ("src/code/early-format")
 
  ("src/code/common-os" :not-host)
@@ -494,6 +497,7 @@
  ("src/compiler/array-tran")
  ("src/compiler/seqtran")
  ("src/compiler/saptran")
+ ("src/compiler/modarith")
  ("src/compiler/sxhash")
  ("src/code/quantifiers")
  ("src/compiler/bitops-derive-type")
@@ -674,10 +678,11 @@
 
  ("src/code/debug" :not-host)
 
- ("src/code/octets" :not-host)
- ("src/code/external-formats/enc-basic" :not-host)
+ ("src/code/octets"                           :not-host)
+ ("src/code/external-formats/newline-codings" :not-host)
+ ("src/code/external-formats/enc-basic"       :not-host)
  #+sb-unicode
- ("src/code/external-formats/enc-ucs" :not-host) ; win32 needs this
+ ("src/code/external-formats/enc-ucs"         :not-host) ; win32 needs this
 
  #+sb-eval
  ("src/code/full-eval"   :not-host) ; uses INFO, ARG-COUNT-ERROR
@@ -717,7 +722,12 @@
 
  ("src/code/late-globaldb" :not-host)
  ("src/code/redblack" :not-host)
- )
+ ;; This file, which must be last, contains sanity-checks of the cross-compile.
+ ;; The inputs and outputs of certain functions (currently just SXHASH) are stored
+ ;; in global symbols. Relying on the fact that data are easily dumped as constants
+ ;; (assuming we don't have a genesis bug), the forms in this file can audit
+ ;; whether things came out right.
+ ("src/code/last-file" :not-host))
 
 ;;; make-target-2 build steps
 (("src/code/early-ntrace" ; lets PCL hook into tracing
@@ -823,8 +833,8 @@
   "src/code/step"
   "src/code/warm-lib"
   "src/code/alien-callback"
-  #+win32 "src/code/warm-mswin"
   "src/code/run-program"
+  #+win32 "src/code/warm-mswin"
   #+gencgc "src/code/traceroot"
 
   "src/code/repack-xref"

@@ -408,13 +408,11 @@
       #+#.(cl:if (cl:= sb-vm:word-shift sb-vm:n-fixnum-tag-bits) '(and) '(or))
       (inst sub rsp-tn nargs)
       #-#.(cl:if (cl:= sb-vm:word-shift sb-vm:n-fixnum-tag-bits) '(and) '(or))
-      (progn
-        ;; FIXME: This can't be efficient, but LEA (my first choice)
-        ;; doesn't do subtraction.
-        (inst shl nargs (- word-shift n-fixnum-tag-bits))
-        (inst sub rsp-tn nargs)
+      (let ((sub nargs))
         (unless unused-count-p
-          (inst shr nargs (- word-shift n-fixnum-tag-bits))))
+          (inst mov :dword (setf sub rax-tn) nargs))
+        (inst shl :dword sub (- word-shift n-fixnum-tag-bits))
+        (inst sub rsp-tn sub))
       (emit-label stack-values))
     ;; dtc: this writes the registers onto the stack even if they are
     ;; not needed, only the number specified in rcx are used and have
@@ -1093,7 +1091,8 @@
   (:generator 20
     ;; Avoid the copy if there are no more args.
     (cond ((zerop fixed)
-           (inst jrcxz JUST-ALLOC-FRAME))
+           (inst test rcx-tn rcx-tn)
+           (inst jmp :z JUST-ALLOC-FRAME))
           ((and (eql min-verified fixed)
                 (> fixed 1))
            ;; verify-arg-count will do a CMP
@@ -1285,7 +1284,8 @@
       (move rcx count)
       ;; Check to see whether there are no args, and just return NIL if so.
       (inst mov result nil-value)
-      (inst jrcxz done)
+      (inst test rcx rcx)
+      (inst jmp :z done)
       (inst lea dst (ea nil rcx (ash 2 (- word-shift n-fixnum-tag-bits))))
       (unless stack-allocate-p
         (instrument-alloc dst node))

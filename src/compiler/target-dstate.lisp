@@ -61,8 +61,11 @@
   (segment-sap (int-sap 0) :type system-area-pointer)
   ;; the current segment
   (segment nil :type (or null segment))
+  ;; true if disassembling non-lisp code, which disables interpretation
+  ;; of  bytes after a trap instruction as SC+OFFSETs.
+  (foreign-code-p nil)
   ;; to avoid buffer overrun at segment end, we might need to copy bytes
-  ;; here first because sap-ref-dchunk reads a fixed length.
+  ;; here first because we access memory in chunks larger than 1 byte.
   (scratch-buf (make-array 8 :element-type '(unsigned-byte 8)))
   ;; what to align to in most cases
   (alignment sb-vm:n-word-bytes :type alignment)
@@ -70,6 +73,7 @@
               :type (member :big-endian :little-endian))
   ;; current instruction as found in instruction space
   (inst)
+  (operands)
   ;; for user code to track decoded bits, cleared each time after a
   ;; non-prefix instruction is processed
   (inst-properties 0 :type fixnum)

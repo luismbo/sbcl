@@ -250,7 +250,7 @@
                      (if (floatp (first values))
                          (native-flonum-value (first values))
                          (first values)))
-          (#+sb-devel error
+          (#+sb-devel cerror #+sb-devel "Ignore"
            #-sb-devel format #-sb-devel t
            "~&//CROSS-FLOAT DISCREPANCY!
 // CACHE: ~S -> ~S~%// HOST : ~@[#x~X = ~]~S~%"
@@ -743,6 +743,13 @@
   (cond ((eql x $2.0d0) $.5d0)
         ((eql x $10.0d0) nil)
         (t (error "MAYBE-EXACT-RECIPROCAL: didn't expect ~S" x))))
+
+;;; This is a convenient utility to have - we use it within this file and
+;;; genesis quite a bit. The target definition resides in target-hash-table.
+(defun %hash-table-alist (hash-table &aux result)
+  (maphash (lambda (key value) (push (cons key value) result))
+           hash-table)
+  result)
 
 ;;; Canonicalize and write out the memoization table. Order it by function,
 ;;; then number of arguments, then each argument's value. Rational precedes

@@ -1027,9 +1027,14 @@ care."
 ;;; THE with some options for the CAST
 (def-ir1-translator the* (((value-type &key context silent-conflict
                                        derive-type-only
-                                       truly) form)
+                                       truly
+                                       source-path
+                                       use-annotations)
+                           form)
                           start next result)
-  (let ((value-type (values-specifier-type value-type)))
+  (let ((value-type (if (ctype-p value-type)
+                        value-type
+                        (values-specifier-type value-type))))
     (cond (derive-type-only
            ;; For something where we really know the type and need no mismatch checking,
            ;; e.g. structure accessors
@@ -1050,8 +1055,19 @@ care."
                                          (t
                                           new-uses))
                                    value-type)))))
+          (use-annotations
+           (ir1-convert start next result form)
+           (when result
+             (add-annotation result
+                             (make-lvar-type-annotation :type value-type
+                                                        :source-path
+                                                        (or source-path
+                                                            *current-path*)
+                                                        :context context))))
           (t
            (let* ((policy (lexenv-policy *lexenv*))
+                  (*current-path* (or source-path
+                                      *current-path*))
                   (cast (the-in-policy value-type form (if truly
                                                            **zero-typecheck-policy**
                                                            policy)
@@ -1068,6 +1084,14 @@ care."
           do (add-annotation
               result
               annotation))))
+
+(def-ir1-translator with-source-form (((&key source-form
+                                             source-path) form)
+                                      start next result)
+  (let ((*current-path* (or source-path
+                            (get-source-path source-form)
+                            *current-path*)))
+    (ir1-convert start next result form)))
 
 (def-ir1-translator bound-cast ((array bound index) start next result)
   (let ((check-bound-tran (make-ctran))
@@ -1104,7 +1128,11 @@ care."
       (info :function :macro-function 'the*)
       (lambda (whole env)
         (declare (ignore env))
-        `(the ,(caadr whole) ,@(cddr whole))))
+        `(the ,(caadr whole) ,@(cddr whole)))
+      (info :function :macro-function 'with-source-form)
+      (lambda (whole env)
+        (declare (ignore env))
+                `(progn ,@ (cddr whole))))
 
 ;;;; SETQ
 

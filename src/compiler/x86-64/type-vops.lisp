@@ -294,8 +294,7 @@
         (inst sub temp (+ (ash 2 n-widetag-bits) bignum-widetag))
         (inst jmp :ne nope)
         ;; Compare the second digit to zero (in TEMP).
-        (inst cmp (make-ea-for-object-slot value (1+ bignum-digits-offset)
-                                           other-pointer-lowtag)
+        (inst cmp (object-slot-ea value (1+ bignum-digits-offset) other-pointer-lowtag)
               temp)
         (inst jmp :z yep) ; All zeros, its an (unsigned-byte 64).
         (inst jmp nope)
@@ -359,6 +358,18 @@
        (inst cmp value (constantize fixnum-hi))
        (inst jmp (if not-p :a :be) target)
        (emit-label skip))))
+
+(define-vop (pointerp)
+  (:args (value :scs (any-reg descriptor-reg) :target temp))
+  (:temporary (:sc unsigned-reg :from (:argument 0)) temp)
+  (:conditional)
+  (:info target not-p)
+  (:policy :fast-safe)
+  (:translate pointerp)
+  (:generator 3
+    (inst lea :dword temp (ea -3 value))
+    (inst test :byte temp #b11)
+    (inst jmp (if not-p :nz :z) target)))
 
 ;;;; list/symbol types
 ;;;

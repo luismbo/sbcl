@@ -63,13 +63,13 @@
       (t
        (inst mov dst src)))))
 
-(defmacro make-ea-for-object-slot (ptr slot lowtag)
+(defmacro object-slot-ea (ptr slot lowtag)
   `(ea (- (* ,slot n-word-bytes) ,lowtag) ,ptr))
 (defmacro tls-index-of (sym)
   `(ea (+ 4 (- other-pointer-lowtag)) ,sym))
 
 (defmacro loadw (value ptr &optional (slot 0) (lowtag 0))
-  `(inst mov ,value (make-ea-for-object-slot ,ptr ,slot ,lowtag)))
+  `(inst mov ,value (object-slot-ea ,ptr ,slot ,lowtag)))
 
 (defun storew (value ptr &optional (slot 0) (lowtag 0))
   (let* ((size (if (tn-p value)
@@ -85,10 +85,10 @@
            (inst mov :qword ea value)))))
 
 (defmacro pushw (ptr &optional (slot 0) (lowtag 0))
-  `(inst push (make-ea-for-object-slot ,ptr ,slot ,lowtag)))
+  `(inst push (object-slot-ea ,ptr ,slot ,lowtag)))
 
 (defmacro popw (ptr &optional (slot 0) (lowtag 0))
-  `(inst pop (make-ea-for-object-slot ,ptr ,slot ,lowtag)))
+  `(inst pop (object-slot-ea ,ptr ,slot ,lowtag)))
 
 
 ;;;; macros to generate useful values
@@ -97,10 +97,11 @@
   `(inst mov ,reg (+ nil-value (static-symbol-offset ,symbol))))
 
 ;; Return the effective address of the value slot of static SYMBOL.
-(defun static-symbol-value-ea (symbol)
+(defun static-symbol-value-ea (symbol &optional (byte 0))
    (ea (+ nil-value
           (static-symbol-offset symbol)
           (ash symbol-value-slot word-shift)
+          byte
           (- other-pointer-lowtag))))
 
 (defun thread-tls-ea (index)

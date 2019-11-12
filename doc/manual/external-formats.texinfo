@@ -28,12 +28,12 @@ Hostname- and protocol-related functions of the BSD-socket interface
 
 @end enumerate
 
-Technically, external formats in SBCL are named objects describing
-coding of characters as well as policies in case de- or encoding is not
-possible. Each external format has a canonical name and zero or more
-aliases. User code mostly interacts with external formats by supplying
-external format designators to functions that use external formats
-internally.
+Technically, external formats in SBCL are named objects describing a
+@emph{character coding} and a @emph{newline coding} as well as policies
+in case de- or encoding is not possible.  Each external format has a
+canonical name and zero or more aliases. User code mostly interacts with
+external formats by supplying external format designators to functions
+that use external formats internally.
 
 @menu
 * The Default External Format::
@@ -53,6 +53,10 @@ external format is used unconditionally.
 
 SBCL determines the default external format according to the following
 rules:
+
+@table @code
+
+@item character coding
 
 @itemize
 
@@ -82,6 +86,12 @@ $ LANG=C.UTF-8 sbcl --noinform --no-userinit --eval "(print (map 'string #'code-
 $ LANG=C sbcl --noinform --no-userinit --eval "(print (map 'string #'code-char (list 97 98 246)))" --quit
 "ab?"
 @end example
+
+@item newline coding
+
+TODO
+
+@end table
 
 @node External Format Designators
 @section External Format Designators
@@ -113,16 +123,17 @@ External Format}).
 Designates the supported external format that has @var{keyword} as one
 of its names. (See @ref{Supported External Formats}).
 
-@item (@var{keyword} :replacement @var{replacement})
+@item (@var{character-coding-designator} :newline-coding @var{newline-coding-designator}:replacement @var{replacement})
 Designates an external format that is like the one designated by
-@var{keyword} but does not signal an error in case a character or octet
+@var{character-coding-designator} but does not signal an error in case a character or octet
 sequence cannot be en- or decoded. Instead, it inserts @var{replacement}
 at the position in question. @var{replacement} has to be a string
 designator, that is a character or string.
 
 For example:
 @lisp
-(with-open-file (stream pathname :external-format '(:utf-8 :replacement #\?))
+(with-open-file (stream pathname :external-format '(:utf-8 :newline-coding :crlf
+                                                           :replacement #\?))
   (read-line stream))
 @end lisp
 will read the first line of @var{pathname}, replacing any octet sequence

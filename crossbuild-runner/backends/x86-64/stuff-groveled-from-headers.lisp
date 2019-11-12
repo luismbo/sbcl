@@ -7,6 +7,9 @@
 (define-alien-type uint (unsigned 32))
 (define-alien-type ulong (unsigned 64))
 
+(defconstant error_file_not_found 2)
+(defconstant error_file_exists #x50)
+
 ;; these are total fabrications
 (defconstant max_path 1024)
 (defconstant error-no-data 1)
@@ -101,9 +104,6 @@
 
 ;;; various ioctl(2) flags
 (defconstant tiocgpgrp 21519) ; #x540f
-(defconstant tiocspgrp 21520) ; #x5410
-(defconstant tiocgwinsz 21523) ; #x5413
-(defconstant tiocswinsz 21524) ; #x5414
 
 ;;; signals
 (defconstant sigalrm 14) ; #xe

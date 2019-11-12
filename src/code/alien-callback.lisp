@@ -12,6 +12,12 @@
 
 (in-package "SB-ALIEN")
 
+;;; ALIEN-CALLBACK is supposed to be external in SB-ALIEN-INTERNALS, but the
+;;; export gets lost, and then 'chill' gets a conflict with SB-ALIEN over it.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (export (intern "ALIEN-CALLBACK" "SB-ALIEN-INTERNALS")
+          "SB-ALIEN-INTERNALS"))
+
 ;;;; ALIEN CALLBACKS
 ;;;;
 ;;;; See "Foreign Linkage / Callbacks" in the SBCL Internals manual.
@@ -198,7 +204,7 @@ ENTER-ALIEN-CALLBACK pulls the corresponding trampoline out and calls it.")
 ;;;; interface (not public, yet) for alien callbacks
 
 (defmacro alien-callback (specifier function &environment env)
-  "Returns an alien-value with of alien ftype SPECIFIER, that can be passed to
+  "Returns an alien-value of alien ftype SPECIFIER, that can be passed to
 an alien function as a pointer to the FUNCTION. If a callback for the given
 SPECIFIER and FUNCTION already exists, it is returned instead of consing a new
 one."

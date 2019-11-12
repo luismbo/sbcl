@@ -35,9 +35,11 @@
     (gethash form *source-paths*)))
 
 (defun ensure-source-path (form)
-  (or (get-source-path form)
-      (cons (simplify-source-path-form form)
-            *current-path*)))
+  (and (boundp '*source-paths*)
+       (boundp '*current-path*)
+       (or (get-source-path form)
+           (cons (simplify-source-path-form form)
+                 *current-path*))))
 
 (defun simplify-source-path-form (form)
   (if (consp form)
@@ -1605,11 +1607,11 @@
        ;; We may want to detect LAMBDA-LIST and VALUES decls here,
        ;; and report them as "Misplaced" rather than "Unrecognized".
        (t
-        (unless (info :declaration :recognized (first spec))
-          (compiler-warn "unrecognized declaration ~S" raw-spec))
-        (let ((fn (info :declaration :handler (first spec))))
-          (if fn
-              (funcall fn res spec vars fvars)
+        (let ((info (info :declaration :known (first spec))))
+          (unless info
+            (compiler-warn "unrecognized declaration ~S" raw-spec))
+          (if (functionp info)
+              (funcall info res spec vars fvars)
               res))))
      optimize-qualities)))
 

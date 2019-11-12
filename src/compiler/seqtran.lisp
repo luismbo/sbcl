@@ -824,34 +824,19 @@
 ;;; Return a form that tests the free variables STRING1 and STRING2
 ;;; for the ordering relationship specified by LESSP and EQUALP. The
 ;;; start and end are also gotten from the environment. Both strings
-;;; must be SIMPLE-BASE-STRINGs.
-(macrolet ((def (name lessp equalp)
+;;; must be simple.
+(macrolet ((def (name test index)
              `(deftransform ,name ((string1 string2 start1 end1 start2 end2)
-                                   (simple-base-string simple-base-string t t t t) *)
-                `(let* ((end1 (if (not end1) (length string1) end1))
-                        (end2 (if (not end2) (length string2) end2))
-                        (index (sb-impl::%sp-string-compare
-                                string1 start1 end1 string2 start2 end2)))
-                  (if index
-                      (cond ((= index end1)
-                             ,(if ',lessp 'index nil))
-                            ((= (+ index (- start2 start1)) end2)
-                             ,(if ',lessp nil 'index))
-                            ((,(if ',lessp 'char< 'char>)
-                               (schar string1 index)
-                               (schar string2
-                                      (truly-the index
-                                                 (+ index
-                                                    (truly-the fixnum
-                                                               (- start2
-                                                                  start1))))))
-                             index)
-                            (t nil))
-                      ,(if ',equalp 'end1 nil))))))
-  (def string<* t nil)
-  (def string<=* t t)
-  (def string>* nil nil)
-  (def string>=* nil t))
+                                   (simple-string simple-string t t t t) *)
+                `(multiple-value-bind (index diff)
+                     (%sp-string-compare string1 start1 end1 string2 start2 end2)
+                   (if ,',test
+                       ,,(if index ''index 'nil)
+                       ,,(if index 'nil ''index))))))
+  (def string<* (< diff 0) t)
+  (def string<=* (> diff 0) nil)
+  (def string>* (> diff 0) t)
+  (def string>=* (< diff 0) nil))
 
 (deftransform string=* ((string1 string2 start1 end1 start2 end2)
                         (string string
@@ -885,15 +870,17 @@
         (t
          (give-up-ir1-transform))))
 
-(macrolet ((def (name result-fun)
+(macrolet ((def (name test index)
              `(deftransform ,name ((string1 string2 start1 end1 start2 end2)
-                                   (simple-base-string simple-base-string t t t t) *)
-                `(,',result-fun
-                  (sb-impl::%sp-string-compare
-                   string1 start1 (or end1 (length string1))
-                   string2 start2 (or end2 (length string2)))))))
-  (def string=* not) ; FIXME: this xform looks counterproductive.
-  (def string/=* identity))
+                                   (simple-string simple-string t t t t) *)
+                `(multiple-value-bind (index diff)
+                     (%sp-string-compare string1 start1 end1 string2 start2 end2)
+                   (declare (ignorable index))
+                   (if (,',test diff 0)
+                       ,,(if index ''index t)
+                       nil)))))
+  (def string=* = nil) ; FIXME: this xform looks counterproductive.
+  (def string/=* /= t))
 
 (deftransform string/=* ((str1 str2 start1 end1 start2 end2) * * :node node
                          :important nil)
@@ -2146,6 +2133,10 @@
                                              from-end (start 0) end
                                              key test test-not)
                                        (t (or list vector) &rest t))
+                (when (and (constant-lvar-p sequence)
+                           (zerop (length (lvar-value sequence))))
+                  (return-from ,fun-name
+                    '(lambda (&rest args) (declare (ignore args)) nil)))
                 (let ((effective-test
                        (unless test-not
                          (if test (lvar-fun-name* test) 'eql)))
@@ -2179,32 +2170,61 @@
                                               ,test-form))))))
   (define-find-position find 0)
   (define-find-position position 1
-   ((let ((max-inline 10))
-      ;; Destructive modification of constants is illegal.
-      ;; Therefore if this sequence would have been output as a code header
-      ;; constant, its contents can't change. We don't need to reference
-      ;; the sequence itself to compare elements.
-      ;; Later transforms will change EQL to EQ if appropriate.
-      (when (and const-seq
-                 (member effective-test '(eql eq))
-                 (not start) (not end) (not key)
-                 (or (not from-end) (constant-lvar-p from-end))
-                 (cond ((listp const-seq)
-                        (not (nthcdr max-inline const-seq)))
-                       ((vectorp const-seq)
-                        (<= (length const-seq) max-inline))))
-        (let ((clauses (loop for x in (coerce const-seq 'list)
-                             for i from 0
-                             collect `((,effective-test item ',x) ,i))))
-          ;; It seems silly to use :from-end and a constant list
-          ;; in a way where it actually matters (duplicate elements),
-          ;; but we either have to do it right or not do it.
-          (when (and from-end (lvar-value from-end))
-            (setq clauses (nreverse clauses)))
-          (return-from position
-                       `(lambda (item sequence &rest junk)
-                          (declare (ignore sequence junk))
-                          (cond ,@clauses)))))))))
+    ;; Destructive modification of constants is illegal.
+    ;; Therefore if this sequence would have been output as a code header
+    ;; constant, its contents can't change. We don't need to reference
+    ;; the sequence itself to compare elements.
+    ;; There are two transforms to try in this situation:
+    ;; 1) Use CASE if the sequence contains only perfectly-hashed symbols.
+    ;;    There is no upper limit on the sequence length- as it increases,
+    ;;    so does the bias against using a series of IFs.  In fact, CASE
+    ;;    might even consider the constant-returning mode to allow
+    ;;    some hash colllisions, which it doesn't currently.
+    ;; 2) Otherwise, use COND, not to exceed some length limit.
+   ((when (and const-seq
+               (member effective-test '(eql eq))
+               (not start) (not end) (not key)
+               (or (not from-end) (constant-lvar-p from-end)))
+      (let ((items (coerce const-seq 'list))
+            ;; It seems silly to use :from-end and a constant list
+            ;; in a way where it actually matters (with repeated elements),
+            ;; but we either have to do it right or not do it.
+            (reversedp (and from-end (lvar-value from-end))))
+        (when (every #'symbolp items)
+          ;; PICK-BEST will stupidly hash dups and call that a collision.
+          (when (= (pick-best-symbol-hash-bits (remove-duplicates items) 'sxhash) 1)
+            ;; Construct a map from symbol to position so that correct results
+            ;; are obtained for :from-end, and/or with duplicates present.
+            ;; Precomputing it is easier than trying to roll the logic into the
+            ;; production of the result form. :TEST can be ignored.
+            (let ((map (loop for x in items for i from 0
+                             collect (cons x i)))
+                  (clauses)
+                  (seen))
+              (dolist (x (if reversedp (reverse map) map))
+                (let ((sym (car x)))
+                  (unless (member sym seen)
+                    ;; NIL and T need wrapping in () since they should not signify
+                    ;; an empty list of keys or the "otherwise" case respectively.
+                    (push (list (if (member sym '(nil t)) (list sym) sym) (cdr x))
+                          clauses)
+                    (push sym seen))))
+              ;; CASE could decide not to use hash-based lookup, as there is a
+              ;; minimum item count cutoff, but that's ok, the code is good either way.
+              (return-from position
+                `(lambda (item sequence &rest rest)
+                   (declare (ignore sequence rest))
+                   (case item ,@(nreverse clauses)))))))
+        (unless (nthcdr 10 items)
+          (let ((clauses (loop for x in items for i from 0
+                               ;; Later transforms will change EQL to EQ if appropriate.
+                               collect `((,effective-test item ',x) ,i))))
+            ;; FIXME: dups cause more than one test on the same key because IR1
+            ;; doesn't propagate information about which IFs can't possibly match.
+            (return-from position
+              `(lambda (item sequence &rest rest)
+                 (declare (ignore sequence rest))
+                 (cond ,@(if reversedp (nreverse clauses) clauses)))))))))))
 
 (macrolet ((define-find-position-if (fun-name values-index)
              `(deftransform ,fun-name ((predicate sequence &key

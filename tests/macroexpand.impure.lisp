@@ -263,3 +263,90 @@
                      (warnings-in-subforms (progn 1) (progn 2))
                      (progn 3))))
                  '((1 2 0) (2 2 0) (1 1 2 0) (2 1 2 0)))))
+
+;;; Tests of EXPAND-SYMBOL-CASE.
+;;; The logic of converting the case to use symbol-hash is valid
+;;; even if the architecture would not do that.
+;;; Use a simple hash function so that the binning can be directly
+;;; controlled by the test.
+(defun wonky-hash (x) (char-code (char (string (the symbol x)) 0)))
+
+;;; Test bin merging with two different scenarios because it matters
+;;; whether a bin in which collisions occur is numerically lower than
+;;; or higher than a bin already emitted into the COND.
+(with-test (:name :symbol-case-complicated :skipped-on (not (or :x86 :x86-64)))
+  (let ((tests '((:foo a b c d) (:bar e f |a|)))
+        (fun
+         (checked-compile
+          `(lambda (x)
+             ,(sb-impl:expand-symbol-case
+               'x
+               '(((or (eql s 'a) (eql s 'b) (eql s 'c) (eql s 'd)) nil :foo)
+                 ((or (eql s 'e) (eql s 'f) (eql s '|a|)) nil :bar))
+               '(a b c d e f |a|)
+               nil
+               'wonky-hash)))))
+    (loop for (expect . inputs) in tests
+          do (dolist (input inputs)
+               (assert (eql (funcall fun input) expect)))))
+
+  (let ((tests '((:foo f e d c) (:bar b a |d|)))
+        (fun
+         (checked-compile
+          `(lambda (x)
+             ,(sb-impl:expand-symbol-case
+               'x
+               '(((or (eql s 'f) (eql s 'e) (eql s 'd) (eql s 'c)) nil :foo)
+                 ((or (eql s 'b) (eql s 'a) (eql s '|d|)) nil :bar))
+               '(a b c d e f |d|)
+               nil
+               'wonky-hash)))))
+    (loop for (expect . inputs) in tests
+          do (dolist (input inputs)
+               (assert (eql (funcall fun input) expect))))))
+
+(with-test (:name :symbol-case-clause-ordering)
+  (let ((f (checked-compile
+            '(lambda (x) (case x ((a z) 1) ((y b w) 2) ((b c) 3)))
+            :allow-style-warnings t)))
+    (assert (eql (funcall f 'b) 2))))
+
+(defun contains-if (predicate tree)
+  (let (seen)
+    (nsubst-if nil
+               (lambda (x)
+                 (when (funcall predicate x)
+                   (setq seen t))
+                 nil)
+               tree)
+    seen))
+
+(defun contains (item tree)
+  (contains-if (lambda (node) (eq node item)) tree))
+
+(defun uses-symbol-hash-p (tree)
+  (contains-if (lambda (x)
+                 (and (symbolp x)
+                      (or (string= x "SYMBOL-HASH")
+                          (string= x "SYMBOL-HASH*"))))
+               tree))
+
+(with-test (:name :symbol-case-conservatively-fail)
+  (assert (not (uses-symbol-hash-p
+                (handler-bind ((style-warning #'muffle-warning))
+                  (macroexpand-1 '(case x ((a b c) 1) ((e d f) 2) (a 3)))))))
+  (assert (uses-symbol-hash-p
+           (macroexpand-1 '(case x ((a b c) 1) ((e d f) 2))))))
+
+(with-test (:name :typecase-to-case)
+  (let ((expansion
+         (macroexpand-1 '(typecase x
+                          ((member a b c) 1)
+                          ((member d e f) 2)))))
+    (assert (uses-symbol-hash-p expansion))))
+
+(with-test (:name :symbol-case-default-form)
+  (let ((f (checked-compile
+            '(lambda (x)
+              (case x ((a b c) 1) ((d e f) 2) (t #*10101))))))
+    (assert (equal (funcall f 30) #*10101))))

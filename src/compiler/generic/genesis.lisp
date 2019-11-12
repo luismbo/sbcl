@@ -1562,32 +1562,22 @@ core and return a descriptor to it."
 ;;; code from destroying the world with (RPLACx nil 'kablooey)
 (defun make-nil-descriptor ()
   (let* ((des (allocate-header+object *static* sb-vm:symbol-size 0))
-         (result (make-descriptor (+ (descriptor-bits des)
+         (nil-val (make-descriptor (+ (descriptor-bits des)
                                      (* 2 sb-vm:n-word-bytes)
                                      (- sb-vm:list-pointer-lowtag
-                                        sb-vm:other-pointer-lowtag)))))
-    (write-wordindexed des
-                       1
-                       (make-other-immediate-descriptor
-                        0
-                        sb-vm:symbol-widetag))
-    (write-wordindexed des
-                       (+ 1 sb-vm:symbol-value-slot)
-                       result)
-    (write-wordindexed des
-                       (+ 2 sb-vm:symbol-value-slot) ; = 1 + symbol-hash-slot
-                       result)
-    (write-wordindexed des
-                       (+ 1 sb-vm:symbol-info-slot)
-                       (cold-cons result result)) ; NIL's info is (nil . nil)
-    (write-wordindexed des
-                       (+ 1 sb-vm:symbol-name-slot)
-                       ;; NIL's name is in dynamic space because any extra
-                       ;; bytes allocated in static space would need to
-                       ;; be accounted for by STATIC-SYMBOL-OFFSET.
-                       (set-readonly (base-string-to-core "NIL" *dynamic*)))
-    (setf (gethash (descriptor-bits result) *cold-symbols*) nil
-          (get nil 'cold-intern-info) result)))
+                                        sb-vm:other-pointer-lowtag))))
+         (header (make-other-immediate-descriptor 0 sb-vm:symbol-widetag))
+         (initial-info (cold-cons nil-val nil-val))
+         ;; NIL's name is in dynamic space because any extra bytes allocated
+         ;; in static space need to be accounted for by STATIC-SYMBOL-OFFSET.
+         (name (set-readonly (base-string-to-core "NIL" *dynamic*))))
+    (write-wordindexed des 1 header)
+    (write-wordindexed des (+ 1 sb-vm:symbol-value-slot) nil-val)
+    (write-wordindexed des (+ 1 sb-vm:symbol-hash-slot) nil-val)
+    (write-wordindexed des (+ 1 sb-vm:symbol-info-slot) initial-info)
+    (write-wordindexed des (+ 1 sb-vm:symbol-name-slot) name)
+    (setf (gethash (descriptor-bits nil-val) *cold-symbols*) nil
+          (get nil 'cold-intern-info) nil-val)))
 
 (defvar core-file-name)
 ;;; Since the initial symbols must be allocated before we can intern
@@ -2087,6 +2077,8 @@ core and return a descriptor to it."
 ;; Boxed header length is stored directly in bytes, not words
 (defun code-header-bytes (code-object)
   (ldb (byte 32 0) (read-bits-wordindexed code-object sb-vm:code-boxed-size-slot)))
+(defun code-header-words (code-object) ; same, but expressed in words
+  (ash (code-header-bytes code-object) (- sb-vm:word-shift)))
 
 (defun lookup-assembler-reference (symbol &optional (mode :direct))
   (let* ((code-component *cold-assembler-obj*)
@@ -2094,12 +2086,13 @@ core and return a descriptor to it."
          (offset (or (cdr (assq symbol list))
                      (error "Assembler routine ~S not defined." symbol))))
     (+ (logandc2 (descriptor-bits code-component) sb-vm:lowtag-mask)
+       (code-header-bytes code-component)
        (ecase mode
          (:direct
-            (+ (code-header-bytes code-component) offset))
+            offset)
          (:indirect
-            (ash (+ (round-up sb-vm:code-constants-offset 2)
-                    (count-if (lambda (x) (< (cdr x) offset)) list))
+            ;; add 1 for the prefix word that counts the absolute fixups
+            (ash (1+ (count-if (lambda (x) (< (cdr x) offset)) list))
                  sb-vm:word-shift))))))
 
 ;;; Unlike in the target, FOP-KNOWN-FUN sometimes has to backpatch.
@@ -2146,9 +2139,15 @@ core and return a descriptor to it."
              (:absolute
               (setf (bvref-32 gspace-data gspace-byte-offset)
                     (the (unsigned-byte 32) addr))
-              ;; Absolute fixups are recorded if within the object for x86.
-              #+x86 (and in-dynamic-space
-                          (< obj-start-addr addr code-end-addr))
+              #+x86
+              (let ((n-jump-table-words
+                     (read-bits-wordindexed code-object
+                                            (code-header-words code-object))))
+                ;; Absolute fixups are recorded if within the object for x86.
+                (and in-dynamic-space
+                     (< obj-start-addr addr code-end-addr)
+                     ;; Except for an initial sequence of unboxed words
+                     (>= after-header (ash n-jump-table-words sb-vm:word-shift))))
               ;; Absolute fixups on x86-64 do not refer to this code component,
               ;; because we have RIP-relative addressing, but references to
               ;; other immobile-space objects must be recorded.
@@ -2176,8 +2175,8 @@ core and return a descriptor to it."
               #+x86 (and in-dynamic-space
                           (not (< obj-start-addr addr code-end-addr)))
               #+x86-64 (eq flavor :foreign)))
-        (push (cons kind after-header)
-              (gethash (descriptor-bits code-object) *code-fixup-notes*)))))
+          (push (cons kind after-header)
+                (gethash (descriptor-bits code-object) *code-fixup-notes*)))))
   code-object)
 
 (defun resolve-static-call-fixups ()
@@ -2193,6 +2192,7 @@ core and return a descriptor to it."
   (collect ((relative) (absolute))
     (dolist (item list)
       (ecase (car item)
+        ;; There should be no absolute64 fixups to preserve
         (:relative (relative (cdr item)))
         (:absolute (absolute (cdr item)))))
     (number-to-core (sb-c::pack-code-fixup-locs (absolute) (relative)))))
@@ -2229,14 +2229,6 @@ core and return a descriptor to it."
                (if (listp key) (cold-list sym) sym))
              'sb-vm::+required-foreign-symbols+)
     (cold-set (cold-intern '*assembler-routines*) *cold-assembler-obj*)
-    (setq *cold-assembler-routines*
-          (sort *cold-assembler-routines* #'< :key #'cdr))
-    #+(or x86 x86-64) ; fill in the indirect call table
-    (let ((index (round-up sb-vm:code-constants-offset 2)))
-      (dolist (item *cold-assembler-routines*)
-        (write-wordindexed/raw *cold-assembler-obj* index
-                               (lookup-assembler-reference (car item)))
-        (incf index)))
     (to-core *cold-assembler-routines*
              (lambda (rtn)
                (cold-cons (cold-intern (first rtn)) (make-fixnum-descriptor (cdr rtn))))
@@ -2693,10 +2685,22 @@ core and return a descriptor to it."
                                       :start start
                                       :end (+ start length)))
     ;; Update the name -> address table.
-    (dotimes (i n-routines)
-      (let ((offset (descriptor-fixnum (pop-stack)))
-            (name (pop-stack)))
-        (push (cons name offset) *cold-assembler-routines*)))
+    (let (table)
+      (dotimes (i n-routines)
+        (let ((offset (descriptor-fixnum (pop-stack)))
+              (name (pop-stack)))
+          (push (cons name offset) table)))
+      ;; Now that we combine all assembler routines into a single code object
+      ;; at assembly time, they can all be sorted at this point.
+      ;; We used to combine them with some magic in genesis.
+      (setq *cold-assembler-routines* (sort table #'< :key #'cdr)))
+    #+(or x86 x86-64) ; fill in the indirect call table
+    (let ((index (code-header-words asm-code)))
+      (dolist (item *cold-assembler-routines*)
+        ;; Preincrement because we skip 1 word for the word containing
+        ;; the number of absolute fixups that follow.
+        (write-wordindexed/raw asm-code (incf index)
+                               (lookup-assembler-reference (car item)))))
     (apply-fixups (%fasl-input-stack (fasl-input)) asm-code n-fixups)))
 
 ;;; Target variant of this is defined in 'target-load'

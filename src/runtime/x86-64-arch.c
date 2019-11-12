@@ -35,17 +35,10 @@
 #include "forwarding-ptr.h"
 #include "core.h"
 
-#ifdef LISP_FEATURE_UD2_BREAKPOINTS
-#define UD2_INST 0x0b0f         /* UD2 */
-#define BREAKPOINT_WIDTH 2
-#else
-#ifdef LISP_FEATURE_INT4_BREAKPOINTS
-# define BREAKPOINT_INST 0xce    /* INTO */
-#else
-# define BREAKPOINT_INST 0xcc    /* INT3 */
-#endif
+#define INT3_INST 0xcc
+#define UD2_INST 0x0b0f
 #define BREAKPOINT_WIDTH 1
-#endif
+
 unsigned int cpuid_fn1_ecx;
 int avx_supported = 0, avx2_supported = 0;
 
@@ -184,9 +177,12 @@ void arch_skip_instruction(os_context_t *context)
         case trap_Error:
         case trap_Cerror:
             skip_internal_error(context);
-
             break;
-
+        case trap_UninitializedLoad:
+            // Skip 1 byte. We can't encode that the internal_error_nargs is 1
+            // because it is not an SC+OFFSET that follows the trap code.
+            *os_context_pc_addr(context) += 1;
+            break;
         case trap_Breakpoint:           /* not tested */
         case trap_FunEndBreakpoint: /* not tested */
             break;
@@ -247,16 +243,8 @@ unsigned int
 arch_install_breakpoint(void *pc)
 {
     unsigned int result = *(unsigned int*)pc;
-
-#ifndef LISP_FEATURE_UD2_BREAKPOINTS
-    *(char*)pc = BREAKPOINT_INST;               /* x86 INT3       */
+    *(char*)pc = INT3_INST;
     *((char*)pc+1) = trap_Breakpoint;           /* Lisp trap code */
-#else
-    *(char*)pc = UD2_INST & 0xff;
-    *((char*)pc+1) = UD2_INST >> 8;
-    *((char*)pc+2) = trap_Breakpoint;
-#endif
-
     return result;
 }
 
@@ -265,9 +253,6 @@ arch_remove_breakpoint(void *pc, unsigned int orig_inst)
 {
     *((char *)pc) = orig_inst & 0xff;
     *((char *)pc + 1) = (orig_inst & 0xff00) >> 8;
-#if BREAKPOINT_WIDTH > 1
-    *((char *)pc + 2) = (orig_inst & 0xff0000) >> 16;
-#endif
 }
 
 /* When single stepping, single_stepping holds the original instruction
@@ -383,7 +368,8 @@ sigtrap_handler(int __attribute__((unused)) signal,
     if (trap == trap_UndefinedFunction) {
         // The interrupted PC pins this fdefn. Sigtrap is delivered on the ordinary stack,
         // not the alternate stack.
-        lispobj* fdefn = search_immobile_space((void*)*os_context_pc_addr(context));
+        // (FIXME: an interior pointer to an fdefn _should_ pin it, but doesn't)
+        lispobj* fdefn = (lispobj*)(*os_context_pc_addr(context) & ~LOWTAG_MASK);
         if (fdefn && widetag_of(fdefn) == FDEFN_WIDETAG) {
             // Return to undefined-tramp
             *os_context_pc_addr(context) = (uword_t)((struct fdefn*)fdefn)->raw_addr;
@@ -401,19 +387,17 @@ void
 sigill_handler(int __attribute__((unused)) signal,
                siginfo_t __attribute__((unused)) *siginfo,
                os_context_t *context) {
-    /* Triggering SIGTRAP using int3 is unreliable on OS X/x86, so
-     * we need to use illegal instructions for traps.
-     */
-#if defined(LISP_FEATURE_UD2_BREAKPOINTS) && !defined(LISP_FEATURE_MACH_EXCEPTION_HANDLER)
+#ifndef LISP_FEATURE_MACH_EXCEPTION_HANDLER
     if (*((unsigned short *)*os_context_pc_addr(context)) == UD2_INST) {
         *os_context_pc_addr(context) += 2;
         return sigtrap_handler(signal, siginfo, context);
     }
-#elif defined(LISP_FEATURE_INT4_BREAKPOINTS) && !defined(LISP_FEATURE_MACH_EXCEPTION_HANDLER)
-    if (*((unsigned char *)*os_context_pc_addr(context)) == BREAKPOINT_INST) {
-        *os_context_pc_addr(context) += BREAKPOINT_WIDTH;
+# ifdef LISP_FEATURE_X86_64 // handle INTO
+    if (*((unsigned char *)*os_context_pc_addr(context)) == 0xCE) {
+        *os_context_pc_addr(context) += 1;
         return sigtrap_handler(signal, siginfo, context);
     }
+# endif
 #endif
 
     fake_foreign_function_call(context);
@@ -736,7 +720,7 @@ allocation_tracker_sized(uword_t* sp)
             (modrm & 0xC0) == 0xC0 && /* register-direct mode */
             ((modrm >> 3) & 0x7) == (modrm & 0x7)) { /* same register */
         } else {
-            lose("Can't decode instruction @ pc %p\n", pc);
+            lose("Can't decode instruction @ pc %p", pc);
         }
         // rewrite call into:
         //  LOCK INC QWORD PTR, [R11+n] ; opcode = 0xFF / 0

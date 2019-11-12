@@ -68,7 +68,7 @@
 ;;; Print to STREAM the name of the general-purpose register encoded by
 ;;; VALUE and of size WIDTH.
 (defun print-reg-with-width (value width stream dstate)
-  (declare (type stream stream)
+  (declare (type (or null stream) stream)
            (type disassem-state dstate))
   (let* ((num (etypecase value
                ((unsigned-byte 4) value)
@@ -81,7 +81,9 @@
                                 (<= 4 num 7))
                            (+ 16 -4 num) ; legacy high-byte register
                            num))))
-    (princ (reg-name reg) stream))
+    (if stream
+        (princ (reg-name reg) stream)
+        (push reg (dstate-operands dstate))))
   ;; XXX plus should do some source-var notes
   )
 
@@ -156,14 +158,16 @@
   (princ16 value stream))
 
 (defun print-xmmreg (value stream dstate)
-  (declare (type stream stream) (ignore dstate))
-  (write-string (reg-name (get-fpr
+  (let* ((reg (get-fpr
                            ;; FIXME: why are we seeing a value from the GPR
                            ;; prefilter instead of XMM prefilter here sometimes?
                            (etypecase value
                              ((unsigned-byte 4) value)
                              (reg (reg-num value)))))
-                stream))
+         (name (reg-name reg)))
+    (if stream
+        (write-string name stream)
+        (push name (dstate-operands dstate)))))
 
 (defun print-xmmreg/mem (value stream dstate)
   (if (machine-ea-p value)
@@ -181,11 +185,12 @@
     (note (lambda (stream) (princ it stream)) dstate)))
 
 (defun print-imm/asm-routine (value stream dstate)
-  (if (or #+immobile-space (maybe-note-lisp-callee value dstate)
-          (maybe-note-assembler-routine value nil dstate)
-          (maybe-note-static-symbol value dstate))
-      (princ16 value stream)
-      (princ value stream)))
+  (cond ((not stream) (push value (dstate-operands dstate)))
+        ((or #+immobile-space (maybe-note-lisp-callee value dstate)
+             (maybe-note-assembler-routine value nil dstate)
+             (maybe-note-static-symbol value dstate))
+         (princ16 value stream))
+        (t (princ value stream))))
 
 ;;; Return an instance of REG or MACHINE-EA.
 ;;; MOD and R/M are the extracted bits from the instruction's ModRM byte.
@@ -273,8 +278,11 @@
   (declare (type (member :ref :sized-ref :compute) mode)
            (type machine-ea value)
            (type (member nil :byte :word :dword :qword) width)
-           (type stream stream)
+           (type (or null stream) stream)
            (type disassem-state dstate))
+  (when (null stream)
+    (return-from print-mem-ref
+      (push (cons value width) (dstate-operands dstate))))
   (let ((base-reg (machine-ea-base value))
         (disp (machine-ea-disp value))
         (index-reg (machine-ea-index value))
@@ -422,10 +430,14 @@
 ;;;; interrupt instructions
 
 (defun break-control (chunk inst stream dstate)
-  (declare (ignore inst))
+  ;; Do not parse bytes following a trap instruction unless it belongs to lisp code.
+  ;; C++ compilers will emit ud2 for various reasons.
+  (when (sb-disassem::dstate-foreign-code-p dstate)
+    (return-from break-control))
   (flet ((nt (x) (if stream (note x dstate))))
-    (let ((trap #-ud2-breakpoints (byte-imm-code chunk dstate)
-           #+ud2-breakpoints (word-imm-code chunk dstate)))
+    (let ((trap (if (eq (sb-disassem::inst-print-name inst) 'ud2)
+                    (word-imm-code chunk dstate)
+                    (byte-imm-code chunk dstate))))
      (case trap
        (#.breakpoint-trap
         (nt "breakpoint trap"))
@@ -441,12 +453,24 @@
         (nt "single-step trap (before)"))
        (#.invalid-arg-count-trap
         (nt "Invalid argument count trap"))
-       (#.cerror-trap
-        (nt "cerror trap")
-        (handle-break-args #'snarf-error-junk trap stream dstate))
        (t
-        (handle-break-args #'snarf-error-junk trap stream dstate))))))
+        (when (or (and (= trap cerror-trap) (progn (nt "cerror trap") t))
+                  (>= trap uninitialized-load-trap))
+          (handle-break-args
+           (lambda (sap offset trap-number length-only)
+             (if (= trap-number uninitialized-load-trap)
+                 (let ((reg (ash (sap-ref-8 sap offset) -2)))
+                   ;; decode a single byte arg, not an SC+OFFSET
+                   (values (error-number-or-lose 'uninitialized-memory-error)
+                           1     ; total number of bytes consumed after the trap
+                           (list (make-sc+offset unsigned-reg-sc-number reg))
+                           '(1)  ; display 1 byte for the register encoding
+                           nil)) ; no error number after the trap instruction
+                 (snarf-error-junk sap offset trap-number length-only)))
+           trap stream dstate)))))))
 
+;;; Note: this really has nothing to do with the code fixups, and we're
+;;; merely utilizing PACK-CODE-FIXUP-LOCS to perform data compression.
 (defun sb-c::convert-alloc-point-fixups (code locs)
   ;; Find the instruction which jumps over the profiling code,
   ;; and record the offset, and not the instruction that makes the call
@@ -475,6 +499,7 @@
          (jmp-inst (find-inst #xE9 inst-space))
          (cond-jmp-inst (find-inst #x800f inst-space))
          (lea-inst (find-inst #x8D inst-space))
+         (address (get-lisp-obj-address code))
          (text-start (sap-int (code-instructions code)))
          (text-end (+ text-start (%code-text-size code)))
          (sap (int-sap start-address)))
@@ -485,7 +510,7 @@
      (lambda (dchunk inst)
        (flet ((includep (target)
                 ;; Self-relative (to the code object) operands are ignored.
-                (and (or (< target text-start) (>= target text-end))
+                (and (or (< target address) (>= target text-end))
                      (funcall predicate target))))
          (cond ((or (eq inst jmp-inst) (eq inst call-inst))
                 (let ((operand (+ (near-jump-displacement dchunk dstate)

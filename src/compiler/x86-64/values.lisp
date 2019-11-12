@@ -25,6 +25,7 @@
             )
   (:temporary (:sc any-reg :offset rsi-offset) rsi)
   (:temporary (:sc any-reg :offset rdi-offset) rdi)
+  (:temporary (:sc descriptor-reg) temp-qword)
   (:ignore r-moved-ptrs)
   (:generator 1
     (move rdi last-nipped-ptr)
@@ -33,12 +34,13 @@
     (inst sub rdi n-word-bytes)
     (inst cmp rsp-tn rsi)
     (inst jmp :a DONE)
-    (inst std)
     LOOP
-    (inst movs :qword)
+    (inst mov temp-qword (ea rsi))
+    (inst mov (ea rdi) temp-qword)
+    (inst sub rsi n-word-bytes)
+    (inst sub rdi n-word-bytes)
     (inst cmp rsp-tn rsi)
-    (inst jmp :be LOOP)
-    (inst cld)
+    (inst jmp :be loop)
     DONE
     (inst lea rsp-tn (ea n-word-bytes rdi))
     (inst sub rdi rsi)
@@ -143,7 +145,8 @@
         (inst shl num (- word-shift n-fixnum-tag-bits))
         (inst lea loop-index (ea nil num (ash 1 (- word-shift n-fixnum-tag-bits)))))
     (inst mov start rsp-tn)
-    (inst jrcxz DONE)  ; check for 0 count?
+    (inst test rcx-tn rcx-tn)
+    (inst jmp :z DONE)  ; check for 0 count?
 
     (inst sub rsp-tn loop-index)
     (inst sub src loop-index)

@@ -187,7 +187,11 @@
                           (setf **character-cases** table))
 
                         (setf **character-collations**
-                              (let* ((table (make-hash-table :size 30057
+                              (let* ((n-entries
+                                      ,(let ((n-entries-file (file "n-collation-entries" "lisp-expr")))
+                                         (with-open-file (s n-entries-file)
+                                           (read s))))
+                                     (table (make-hash-table :size n-entries
                                                              #+64-bit :test #+64-bit #'eq))
                                      (index 0)
                                      (info (make-ubn-vector ,collations 4))
@@ -207,9 +211,12 @@
                                         (dotimes (i key-length)
                                           (setf (ldb (byte 32 (* i 32)) key) (aref info index))
                                           (incf index))
+                                        ;; verify the validity of
+                                        ;; :test 'eq on 64-bit
+                                        #+64-bit (aver (typep (apply #'pack-3-codepoints codepoints) 'fixnum))
                                         (setf (gethash (apply #'pack-3-codepoints codepoints) table)
                                               key)))
-                                (assert (= (hash-table-count table) 30057))
+                                (aver (= (hash-table-count table) n-entries))
                                 table))))
 
                     ,(with-open-file

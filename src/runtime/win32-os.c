@@ -814,14 +814,15 @@ static inline boolean local_thread_stack_address_p(os_vm_address_t address)
  */
 
 os_vm_address_t
-os_validate(int movable, os_vm_address_t addr, os_vm_size_t len)
+os_validate(int attributes, os_vm_address_t addr, os_vm_size_t len)
 {
     MEMORY_BASIC_INFORMATION mem_info;
 
     if (!addr) {
         /* the simple case first */
+        int protection = attributes & IS_GUARD_PAGE ? PAGE_NOACCESS : PAGE_EXECUTE_READWRITE;
         return
-            AVERLAX(VirtualAlloc(addr, len, MEM_RESERVE|MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+            AVERLAX(VirtualAlloc(addr, len, MEM_RESERVE|MEM_COMMIT, protection));
     }
 
     if (!AVERLAX(VirtualQuery(addr, &mem_info, sizeof mem_info)))
@@ -919,7 +920,7 @@ os_invalidate_free_by_any_address(os_vm_address_t addr,
 
 /* os_validate doesn't commit, i.e. doesn't actually "validate" in the
  * sense that we could start using the space afterwards.  Usually it's
- * os_map or Lisp code that will run into that, in which case we recommit
+ * load_core_bytes or Lisp code that will run into that, in which case we recommit
  * elsewhere in this file.  For cases where C wants to write into newly
  * os_validate()d memory, it needs to commit it explicitly first:
  */
@@ -931,7 +932,7 @@ os_validate_recommit(os_vm_address_t addr, os_vm_size_t len)
 }
 
 /*
- * os_map() is called to map a chunk of the core file into memory.
+ * load_core_bytes() is called to load a chunk of the core file into memory.
  *
  * Unfortunately, Windows semantics completely screws this up, so
  * we just add backing store from the swapfile to where the chunk
@@ -941,7 +942,7 @@ os_validate_recommit(os_vm_address_t addr, os_vm_size_t len)
  * thing to maintain).
  */
 
-void os_map(int fd, int offset, os_vm_address_t addr, os_vm_size_t len)
+void load_core_bytes(int fd, int offset, os_vm_address_t addr, os_vm_size_t len)
 {
     os_vm_size_t count;
 
@@ -1524,7 +1525,7 @@ char *dirname(char *path)
     int i;
 
     if (pathlen >= sizeof(buf)) {
-        lose("Pathname too long in dirname.\n");
+        lose("Pathname too long in dirname.");
         return NULL;
     }
 

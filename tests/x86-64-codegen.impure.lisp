@@ -11,6 +11,7 @@
 
 #-x86-64 (sb-ext:exit :code 104)
 
+(load "compiler-test-util.lisp")
 (defun disasm (safety expr &optional (remove-epilogue t))
   ;; This lambda has a name because if it doesn't, then the name
   ;; is something stupid like (lambda () in ...) which pretty-prints
@@ -329,3 +330,210 @@
 
 (with-test (:name :huge-code :skipped-on (not :immobile-code))
   (sb-vm::allocate-code-object :immobile 4 (* 2 1024 1024)))
+
+(defun bbb (x y z)
+  ;; I don't want the number of expected comparisons to depend on whether
+  ;; the code gets disassembled with versus without the initial segment.
+  (declare (optimize (sb-c::verify-arg-count 0)))
+  (if x
+      (ecase y
+        (-2 'a) (2 'b) (3 'c) (4 (error "no")) (5 'd) (6 'e) (7 'wat) (8 '*) (9 :hi))
+      (case z
+        (#\a :a) (#\b :b) (#\e :c) (#\f :d) (#\g :e) (#\h :f) (t nil))))
+
+(defun try-case-known-fixnum (x)
+  (declare (optimize (sb-c::verify-arg-count 0)))
+  (case (the fixnum x)
+    (0 :a) (1 :b) (2 :c) (5 :d) (6 :c) (-1 :blah)))
+(defun try-case-maybe-fixnum (x)
+  (when (typep x 'fixnum)
+    (case x
+      (0 :a) (1 :b) (2 :c) (5 :d) (6 :c) (-1 :blah))))
+
+(defun try-case-known-char (x)
+  (declare (optimize (sb-c::verify-arg-count 0)))
+  (case (the character x)
+    (#\a :a) (#\b :b)(#\c :c) (#\d :d) (#\e :e) (#\f :b)))
+(defun try-case-maybe-char (x)
+  (declare (optimize (sb-c::verify-arg-count 0)))
+  (when (characterp x)
+    (case x (#\a :a) (#\b :b)(#\c :c) (#\d :d) (#\e :e) (#\f :a))))
+
+(defun expect-n-comparisons (fun-name howmany)
+  (let ((lines
+          (split-string
+           (with-output-to-string (s) (disassemble fun-name :stream s))
+           #\newline)))
+    (assert (= (loop for line in lines count (search "CMP" line))
+               howmany))))
+
+(with-test (:name :multiway-branch-generic-eq)
+  ;; there's 1 test of NIL, 1 test of character-widetag, and 2 limit checks
+  (expect-n-comparisons 'bbb 4)
+  (loop for ((x y z) . expect) in '(((t 3 nil) . c)
+                                    ((t 9 nil) . :hi)
+                                    ((nil nil #\b) . :b)
+                                    ((nil nil #\x) . nil))
+        do (assert (eq (bbb x y z) expect))))
+
+(with-test (:name :multiway-branch-fixnum-eq)
+  (expect-n-comparisons 'try-case-known-fixnum 1) ; just the upper bound
+  (expect-n-comparisons 'try-case-maybe-fixnum 1))
+
+(with-test (:name :multiway-branch-char-eq)
+  (expect-n-comparisons 'try-case-known-char 2) ; widetag test and upper bound
+  (expect-n-comparisons 'try-case-maybe-char 2))
+
+(with-test (:name :multiway-branch-min-branch-factor)
+  ;; Test that multiway vop shows up in IR2
+  (let ((s (with-output-to-string (sb-c::*compiler-trace-output*)
+             (checked-compile '(lambda (b)
+                                (case b
+                                  ((0) :a) ((0) :b) ((0) :c) ((1) :d)
+                                  ((2) :e) ((3) :f)))
+                              :allow-style-warnings t))))
+    (assert (search "MULTIWAY-BRANCH" s)))
+  ;; There are too few cases after duplicate removal to be considered multiway
+  (let ((s (with-output-to-string (sb-c::*compiler-trace-output*)
+             (checked-compile '(lambda (b) (case b ((0) :a) ((0) :b) ((0) :c) ((1) :d)))
+                              :allow-style-warnings t))))
+    (assert (not (search "MULTIWAY-BRANCH" s)))))
+
+;;; Don't crash on large constants
+;;; https://bugs.launchpad.net/sbcl/+bug/1850701
+;;; (modified example to avoid style warning)
+(with-test (:name :multiway-branch-large-constants)
+  (let ((f (checked-compile
+            '(lambda (p)
+               (case p
+                (1881481965704634 0)
+                (1881481965704630 1)
+                (1881481965704635 2)
+                (1881481965704629 3)
+                (1881481965704633 4)
+                (t nil))))))
+    (assert (eql (funcall f 1881481965704629) 3))))
+
+;; https://bugs.launchpad.net/sbcl/+bug/1850705
+(with-test (:name :multiway-branch-dead-code-elim)
+  (let ((f (checked-compile
+            '(lambda (b)
+              (case b
+                ((4 1 2 3) 0)
+                ((2 4) (mod b (min -49 0)))
+                (t 0)))
+            :allow-style-warnings t)))
+    (dotimes (i 5) (assert (eql (funcall f i) 0)))
+    (assert (eql (funcall f 'anything) 0)))
+  (let ((f (checked-compile
+            '(lambda (s1 s2 c)
+              (case s2
+                ((2) s2)
+                ((2) (mod s1 (max 9 0)))
+                ((1 4) 0)
+                ((-1) c)
+                (t 0)))
+            :allow-style-warnings t)))
+    (assert (eql (funcall f nil 2 nil) 2))
+    (assert (eql (funcall f 0 -1 :hi) :hi))))
+
+;; https://bugs.launchpad.net/sbcl/+bug/1850785
+(with-test (:name :multiway-branch-to-branch)
+  ;; The behavior changes because of single-use var elimination
+  ;; which eliminates a move which eliminates a vop as a no-op,
+  ;; or something, which left an empty block. (Hand-waving explanation)
+  (let* ((form '(case c
+                 ((6) c)
+                 ((9 13 12) (case a ((-2589) a) ((970) 0) (t b)))
+                 (t a)))
+         (l1 `(lambda (a b c) (declare (optimize (debug 0))) ,form))
+         (l2 `(lambda (a b c) ,form))
+         (f1 (checked-compile l1))
+         (f2 (checked-compile l2))
+         (vals '(:good :bad 0)))
+    (assert (eq (apply f1 vals) :good))
+    (assert (eq (apply f2 vals) :good)))
+  ;;
+  (let* ((form '(case d
+                 ((7 18) (case b
+                           ((114361) :bad)
+                           ((77773) a)
+                           ((118772) c)
+                           (t :bad)))
+                 ((6) 2)
+                 ((3) b)
+                 ((15 21 9 19 2) 3)
+                 ((20) 1)
+                 (t a)))
+         (vals '(:good 5 :xyz 0))
+         (l1 `(lambda (a b c d)
+                (declare (type fixnum b))
+                ,form))
+         (l2 `(lambda (a b c d)
+                (declare (optimize (speed 3)))
+                ,form))
+         (f1 (checked-compile l1))
+         (f2 (checked-compile l2)))
+    (assert (eq (apply f1 vals) :good))
+    (assert (eq (apply f2 vals) :good))))
+
+(defun count-assembly-labels (lines)
+  (count-if (lambda (line &aux (colon (search ": " line)))
+              (and colon
+                   (char= (char line (+ colon 2)) #\L)))
+            lines))
+
+(with-test (:name :disassembler-label-jump-table-targets)
+  (let* ((f (checked-compile
+             '(lambda (x)
+               (declare (optimize (sb-c::verify-arg-count 0)))
+               (case (truly-the fixnum x)
+                 (0 (a)) (1 (b)) (2 (c)) (3 (d))))
+             :allow-style-warnings t))
+         (lines (split-string
+                 (with-output-to-string (s) (disassemble f :stream s))
+                 #\newline)))
+    (assert (>= (count-assembly-labels lines) 4))))
+
+(with-test (:name :ecase-symbol->integer-branch-free)
+  (let* ((f (checked-compile
+             '(lambda (x)
+               ;; The safety 0 decl skips the arg count check
+               ;; and trusts that X satisfies symbolp.
+               (declare (symbol x) (optimize (safety 0)))
+               (ecase x
+                 ((nil) 0) (a 1) (b 2) (c 3) (d 4)
+                 (e 5) (f 6) (g 7) (h 8) (i 9)))))
+         (lines (split-string
+                 (with-output-to-string (s) (disassemble f :stream s))
+                 #\newline)))
+    ;; Aside from ECASE failure, there are no other JMPs
+    (assert (= (count-assembly-labels lines) 1))))
+
+(with-test (:name :ecase-failure-trap)
+  (assert (null (ctu:find-named-callees
+                 (checked-compile `(lambda (x)
+                                     (ecase x (:a 1) (:b 2) (:c 3)))))))
+  (assert (null (ctu:find-named-callees
+                 (checked-compile `(lambda (x)
+                                     (etypecase x
+                                       ((integer 1 20) 'hi)
+                                       ((cons (eql :thing)) 'wat)
+                                       (bit-vector 'hi-again))))))))
+
+(with-test (:name :symbol-case-optimization-levels)
+  (let ((cases
+         '((a 1) (b 1) (c 3/2)
+           (d 2) (e 2) (f "hello")
+           (g 3) (h 3) (i -3))))
+    (dolist (constraint '(t symbol (not null) (and symbol (not null))))
+      (dotimes (safety 4)
+        (let ((f (checked-compile
+                  `(lambda (x)
+                    (declare (optimize (safety ,safety)))
+                    (case (the ,constraint x) ,@cases (t :feep))))))
+          (dolist (input '(a b c d e f g h i j k nil 5 7))
+            (when (typep input constraint)
+              (assert (eq (funcall f input)
+                          (let ((cell (assoc input cases)))
+                            (if cell (cadr cell) :feep)))))))))))

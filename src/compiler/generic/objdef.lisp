@@ -203,7 +203,10 @@ during backtrace.
               :ref-trans %code-debug-info
               :set-known ()
               :set-trans (setf %code-debug-info))
-  #+(or x86 immobile-space)
+  ;; Define this slot if the architecture might ever use fixups.
+  ;; x86-64 doesn't necessarily use them, depending on the feature set,
+  ;; but this keeps things consistent.
+  #+(or x86 x86-64)
   (fixups :type t
           :ref-known (flushable)
           :ref-trans %code-fixups
@@ -261,11 +264,11 @@ during backtrace.
 
 (define-primitive-object (closure :lowtag fun-pointer-lowtag
                                    :widetag closure-widetag
-                                   ;; This allocator is %COPY-foo because it's only
-                                   ;; used when renaming a closure. The compiler has
-                                   ;; its own way of making closures, which requires
-                                   ;; that the length be a compile-time constant.
-                                   :alloc-trans %copy-closure)
+                                   ;; This allocator is used when renaming or cloning
+                                   ;; a closure. The compiler has its own way of making
+                                   ;; closures which requires that the length be
+                                   ;; a compile-time constant.
+                                   :alloc-trans %alloc-closure)
   (fun :init :arg :ref-trans #+(or x86 x86-64) %closure-callee
                              #-(or x86 x86-64) %closure-fun)
   (info :rest-p t))
@@ -353,14 +356,27 @@ during backtrace.
   ;; OTHER-POINTER-LOWTAG is 7, LIST-POINTER-LOWTAG is 3, so if you
   ;; subtract 3 from (SB-KERNEL:GET-LISP-OBJ-ADDRESS 'NIL) you get the
   ;; first data slot, and if you subtract 7 you get a symbol header.
+  ;; (The numbers mentioned pertain to the 32-bit machines, not 64-bit)
 
-  ;; also the CAR of NIL-as-end-of-list
+  ;; HASH and VALUE are the first two slots.
+  ;; Traditionally VALUE was the first slot, corresponding to the CAR of
+  ;; NIL-as-end-of-list; and HASH was the second, corresponding to CDR.
+  ;; Some architectures reverse the order because by storing HASH in the word
+  ;; after the object header it becomes a memory-safe operation to read
+  ;; SYMBOL-HASH-SLOT from _any_ object whatsoever (the minimum size is 2 words)
+  ;; using lisp code equivalent to "native_pointer(ptr)[1]".
+  ;; Either order should work on any backend; it is merely a question of checking
+  ;; that backend-specific files don't rely on a certain order.
+  ;; Also note that in general, accessing the hash requires masking off bits to
+  ;; yield a fixnum result, all the more so if the object is any random type.
+
+  #+(or arm arm64 ppc ppc64 x86 x86-64) (hash :set-trans %set-symbol-hash)
+
   (value :init :unbound
          :set-trans %set-symbol-global-value
          :set-known ())
-  ;; also the CDR of NIL-as-end-of-list.  Its reffer needs special
-  ;; care for this reason, as hash values must be fixnums.
-  (hash :set-trans %set-symbol-hash)
+
+  #-(or arm arm64 ppc ppc64 x86 x86-64) (hash :set-trans %set-symbol-hash)
 
   (info :ref-trans symbol-info :ref-known (flushable)
         :set-trans (setf symbol-info)
@@ -425,7 +441,8 @@ during backtrace.
 ;;; If we can't do that for some reason - like, say, the safepoint page
 ;;; is located prior to 'struct thread', then these just become ordinary slots.
 (defglobal *thread-header-slot-names*
-  (append #+immobile-space '(function-layout
+  (append '(msan-xor-constant)
+          #+immobile-space '(function-layout
                              varyobj-space-addr
                              varyobj-card-count
                              varyobj-card-marks)))
@@ -580,6 +597,16 @@ during backtrace.
     ;; that it's an excessive bound. 22 bits expresses the maximum object size
     ;; for 32-bit words. The boxed count can't in practice be that large.
     (ldb (byte 22 0) (ash (%code-boxed-size code) (- n-fixnum-tag-bits word-shift))))
+
+  ;; Possibly not the best place for this definition, but other accessors
+  ;; for primitive objects are here too.
+  (defun code-jump-table-words (code)
+    (declare (code-component code)
+             (ignorable code))
+    #-(or x86 x86-64) 0
+    #+(or x86 x86-64)
+    (with-pinned-objects (code)
+      (truly-the (unsigned-byte 16) (sap-ref-word (code-instructions code) 0))))
 
   (defun %code-code-size (code)
     (declare (code-component code))

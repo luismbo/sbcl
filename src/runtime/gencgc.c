@@ -602,7 +602,7 @@ zero_range_with_mmap(os_vm_address_t addr, os_vm_size_t length) {
     // cautious not to resurrect bytes that originally came from the file.
     if ((os_vm_address_t)addr >= anon_dynamic_space_start) {
         if (madvise(addr, length, MADV_DONTNEED) != 0)
-            lose("madvise failed\n");
+            lose("madvise failed");
     } else
 #endif
     {
@@ -831,7 +831,7 @@ gc_alloc_new_region(sword_t nbytes, int page_type_flag, struct alloc_region *all
         for (p = alloc_region->start_addr;
              (void*)p < alloc_region->end_addr; p++) {
             if (*p != 0) {
-                lose("The new region is not zero at %p (start=%p, end=%p).\n",
+                lose("The new region is not zero at %p (start=%p, end=%p).",
                      p, alloc_region->start_addr, alloc_region->end_addr);
             }
         }
@@ -1413,7 +1413,7 @@ static uword_t adjust_obj_ptes(page_index_t first_page,
           int i;
           for(i=0; i<(int)(GENCGC_CARD_BYTES/N_WORD_BYTES); ++i)
               if (words[i])
-                lose("non-zeroed trailer of shrunken object @ %p\n",
+                lose("non-zeroed trailer of shrunken object @ %p",
                      page_address(first_page));
         }
 #endif
@@ -2479,7 +2479,7 @@ scavenge_newspace(generation_index_t generation)
                 && (page_table[i].gen == generation)
                 && (page_table[i].write_protected_cleared != 0)
                 && (page_table[i].pinned == 0)) {
-                lose("write protected page %d written to in scavenge_newspace\ngeneration=%d pin=%d\n",
+                lose("write protected page %d written to in scavenge_newspace\ngeneration=%d pin=%d",
                      i, generation, page_table[i].pinned);
             }
         }
@@ -2866,7 +2866,7 @@ verify_range(lispobj *where, sword_t nwords, struct verify_state *state)
                 if (compacting_p() && (state->flags & VERIFY_POST_GC) ?
                     (state->min_pointee_gen < my_gen) != rememberedp :
                     (state->min_pointee_gen < my_gen) && !rememberedp)
-                    lose("object @ %p is gen%d min_pointee=gen%d %s\n",
+                    lose("object @ %p is gen%d min_pointee=gen%d %s",
                          where, my_gen, state->min_pointee_gen,
                          rememberedp ? "written" : "not written");
 #endif
@@ -3010,8 +3010,10 @@ write_protect_generation_pages(generation_index_t generation)
     page_index_t start = 0, end;
     int n_hw_prot = 0, n_sw_prot = 0;
 
-    // Neither 0 nor scratch can be set in the mask
-    gc_assert(generation != 0 && generation != SCRATCH_GENERATION);
+    // Neither 0 nor scratch can be protected. Additionally, protection of
+    // pseudo-static space is applied only in gc_load_corefile_ptes().
+    gc_assert(generation != 0 && generation != SCRATCH_GENERATION
+              && generation != PSEUDO_STATIC_GENERATION);
 
     while (start  < next_free_page) {
         if (!protect_page_p(start, generation)) {
@@ -3746,7 +3748,7 @@ collect_garbage(generation_index_t last_gen)
         /* Check that they are all empty. */
         for (i = 0; i < gen_to_wp; i++) {
             if (generations[i].bytes_allocated)
-                lose("trying to write-protect gen. %d when gen. %d nonempty\n",
+                lose("trying to write-protect gen. %d when gen. %d nonempty",
                      gen_to_wp, i);
         }
         write_protect_generation_pages(gen_to_wp);
@@ -4130,7 +4132,7 @@ gencgc_handle_wp_violation(void* fault_addr)
                         page_table[page_index].write_protected_cleared,
                         page_table[page_index].gen);
                 if (!continue_after_memoryfault_on_unprotected_pages)
-                    lose("Feh.\n");
+                    lose("Feh.");
             }
         }
         /* Don't worry, we can handle it. */
@@ -4347,7 +4349,7 @@ gc_and_save(char *filename, boolean prepend_runtime,
      * beyond hope, there's not much we can do.
      * (beyond FUNCALLing lisp_init_function, but I suspect that's
      * going to be rather unsatisfactory too... */
-    lose("Attempt to save core after non-conservative GC failed.\n");
+    lose("Attempt to save core after non-conservative GC failed.");
 }
 
 /* Read corefile ptes from 'fd' which has already been positioned
@@ -4365,7 +4367,10 @@ void gc_load_corefile_ptes(core_entry_elt_t n_ptes, core_entry_elt_t total_bytes
     if (lseek(fd, offset, SEEK_SET) != offset) lose("failed seek");
     char data[8192];
     // Process an integral number of ptes on each read.
-    page_index_t max_pages_per_read = sizeof data / sizeof (struct corefile_pte);
+    // Parentheses around sizeof (type) are necessary to suppress a
+    // clang warning (-Wsizeof-array-div) that we're dividing the array size
+    // by a divisor that is not the size of one element in that array.
+    page_index_t max_pages_per_read = sizeof data / (sizeof (struct corefile_pte));
     page_index_t page = 0;
     generation_index_t gen = CORE_PAGE_GENERATION;
     while (page < n_ptes) {
@@ -4400,8 +4405,33 @@ void gc_load_corefile_ptes(core_entry_elt_t n_ptes, core_entry_elt_t total_bytes
               ((char*)get_alloc_pointer() - page_address(0)));
     // write-protecting needs the current value of next_free_page
     next_free_page = n_ptes;
-    if (gen != 0 && ENABLE_PAGE_PROTECTION)
-        write_protect_generation_pages(gen);
+    if (gen != 0 && ENABLE_PAGE_PROTECTION) {
+        // coreparse can avoid hundreds to thousands of mprotect() calls by
+        // treating the whole range from the corefile as protectable, except
+        // that soft-marked code pages must NOT be subject to mprotect.
+        // So just watch out for empty pages and code.  Unboxed object pages
+        // will get unprotected on demand.
+#define non_protectable_page_p(x) !page_bytes_used(x) || \
+              (CODE_PAGES_USE_SOFT_PROTECTION && \
+               (page_table[x].type & PAGE_TYPE_MASK) == CODE_PAGE_TYPE)
+        page_index_t start = 0, end;
+        // cf. write_protect_generation_pages()
+        while (start  < next_free_page) {
+            if (non_protectable_page_p(start)) {
+                ++start;
+                continue;
+            }
+            page_table[start].write_protected = 1;
+            for (end = start + 1; end < next_free_page; end++) {
+                if (non_protectable_page_p(end)) break;
+                page_table[end].write_protected = 1;
+            }
+            os_protect(page_address(start),
+                       npage_bytes(end - start),
+                       OS_VM_PROT_READ | OS_VM_PROT_EXECUTE);
+            start = end;
+        }
+    }
 }
 
 /* Prepare the array of corefile_ptes for save */
@@ -4497,6 +4527,26 @@ sword_t scav_code_header(lispobj *object, lispobj header)
         /* Scavenge the boxed section of the code data block. */
         sword_t n_header_words = code_header_words((struct code *)object);
         scavenge(object + 2, n_header_words - 2);
+#ifdef LISP_FEATURE_64_BIT
+        /* If any function in this code object redirects to a function outside
+         * the object, then scavenge all entry points. Otherwise there is no need,
+         * as trans_code() made necessary adjustments to internal entry points.
+         * This test is just an optimization to avoid some work */
+        if (((*object >> 8) & 0xff) == CODE_IS_TRACED) {
+#else
+        { /* Not enough spare bits in the header to hold random flags.
+           * Just do the extra work always */
+#endif
+            struct code* code = (struct code*)object;
+            for_each_simple_fun(i, fun, code, 1, {
+                if (simplefun_is_wrapped(fun)) {
+                    lispobj target_fun = fun_taggedptr_from_self(fun->self);
+                    lispobj new = target_fun;
+                    scavenge(&new, 1);
+                    if (new != target_fun) fun->self = fun_self_from_taggedptr(new);
+                }
+            })
+        }
 
         /* If my_gen is other than newspace, then scan for old->young
          * pointers. If my_gen is newspace, there can be no such pointers

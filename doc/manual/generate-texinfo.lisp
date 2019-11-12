@@ -92,10 +92,20 @@
                 do (format stream "@item ~S~%~{@code{~S}~^, ~}~%~%"
                            canonical-name names))
              (format stream "@end table~%")))
+      ;; Newline coding
+      (format stream "Newline codings~2%")
       (let (result)
-        (sb-int:dohash ((key val) sb-impl::*external-formats*)
+        (sb-int:dohash ((key val) sb-impl::**newline-codings**)
           (declare (ignore key))
-          (pushnew (sb-impl::ef-names val) result :test #'equal))
+          (pushnew (sb-impl::nc-names val) result :test #'equal))
+        (table (sort result #'string< :key #'car)))
+
+      ;; Character codings
+      (format stream "~%Character codings~2%")
+      (let (result)
+        (sb-int:dohash ((key val) sb-impl::**character-codings**)
+          (declare (ignore key))
+          (pushnew (sb-impl::cc-names val) result :test #'equal))
         (table (sort result #'string< :key #'car))))))
 
 ;;;; Entry point

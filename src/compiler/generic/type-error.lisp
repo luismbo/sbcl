@@ -133,7 +133,12 @@
     sb-c::%odd-key-args-error nil)
   (def unknown-key-arg-error unknown-key-arg-error
     sb-c::%unknown-key-arg-error t key)
+  (def ecase-failure sb-kernel::ecase-failure-error ecase-failure
+    nil value keys)
+  (def etypecase-failure sb-kernel::etypecase-failure-error etypecase-failure
+    nil value keys)
   (def nil-fun-returned-error nil-fun-returned-error nil nil fun)
+  (def sb-impl::unreachable sb-kernel::unreachable-error sb-impl::unreachable nil)
   (def failed-aver sb-kernel::failed-aver-error
     sb-impl::%failed-aver
     nil form))
