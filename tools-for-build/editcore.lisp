@@ -15,6 +15,7 @@
 ;;;; provided with absolutely no warranty. See the COPYING and CREDITS
 ;;;; files for more information.
 
+#-win32
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :sb-posix)) ; for mmap
 
@@ -944,9 +945,9 @@
                (%make-lisp-obj (logior translation other-pointer-lowtag))))
            (%widetag-of (word)
              (logand word widetag-mask)))
-
+    ;; (format t "OLA 2~%") (force-output)
     (write-preamble output)
-
+    ;; (format t "OLA 3~%") (force-output)
     ;; Scan the assembly routines.
     (let* ((code-component (make-code-obj code-addr))
            (obj-sap (int-sap (- (get-lisp-obj-address code-component)
@@ -991,24 +992,26 @@
                                    (- obj-size (* header-len n-word-bytes))
                                    (1+ end-offs))
                                start-offs)))
-              (format output " lasmsym ~(\"~a\"~), ~d~%" name nbytes)
-              (emit-lisp-function (+ (sap-int (code-instructions code-component))
-                                     start-offs)
-                                  (+ code-addr
-                                     (ash (code-header-words code-component) word-shift)
-                                     start-offs)
-                                  nbytes output nil core)))
+                (format output " lasmsym ~(\"~a\"~), ~d~%" name nbytes)
+                (emit-lisp-function (+ (sap-int (code-instructions code-component))
+                                       start-offs)
+                                    (+ code-addr
+                                       (ash (code-header-words code-component) word-shift)
+                                       start-offs)
+                                    nbytes output nil core)))
             (when (endp list) (return)))
           (incf code-addr obj-size)
           (setf total-code-size obj-size))))
     (format output "~%# end of lisp asm routines~2%")
-
+    ;; (format t "OLA 5~%") (force-output)
     (loop
       (when (>= code-addr (bounds-high code-bounds))
         (setq end-loc code-addr)
         (return))
+      ;; (format t "OLA 5 about to get the widetag of ~x~%" (translate-ptr code-addr spaces)) (force-output)
       (ecase (%widetag-of (sap-ref-word (int-sap (translate-ptr code-addr spaces)) 0))
         (#.code-header-widetag
+         ;; (format t "OLA 5 code-header-widetag ~%") (force-output)
          (let* ((code (make-code-obj code-addr))
                 (objsize (code-object-size code)))
            (incf total-code-size objsize)
@@ -1023,12 +1026,12 @@
              ((%instancep (%code-debug-info code)) ; assume it's a COMPILED-DEBUG-INFO
               (aver (plusp (code-n-entries code)))
               (let* ((source
-                      (sb-c::compiled-debug-info-source
-                       (truly-the sb-c::compiled-debug-info
-                                  (translate (%code-debug-info code) spaces))))
+                       (sb-c::compiled-debug-info-source
+                        (truly-the sb-c::compiled-debug-info
+                                   (translate (%code-debug-info code) spaces))))
                      (namestring
-                      (debug-source-namestring
-                       (truly-the sb-c::debug-source (translate source spaces)))))
+                       (debug-source-namestring
+                        (truly-the sb-c::debug-source (translate source spaces)))))
                 (setq namestring (if (eq namestring (core-nil-object core))
                                      "sbcl.core"
                                      (translate namestring spaces)))
@@ -1061,6 +1064,7 @@
               (error "Strange code component: ~S" code)))
            (incf code-addr objsize)))
         (#.fdefn-widetag
+         ;; (format t "OLA 5 fdefn-widetag ~%") (force-output)
          (unless seen-fdefns
            (format output "~%# FDEFNs~%")
            (setq seen-fdefns t))
@@ -1068,20 +1072,25 @@
                 (fdefn (%make-lisp-obj (logior ptr other-pointer-lowtag)))
                 (name (fun-name-from-core (fdefn-name fdefn) core))
                 (c-name (c-name name core pp-state "F")))
+           ;; (format t "OLA 5 fdefn-widetag A~%")
            (format output "~a: # ~x~% .size ~0@*~a, 32~%"
-                     (c-symbol-quote c-name)
-                     (logior code-addr other-pointer-lowtag))
+                   (c-symbol-quote c-name)
+                   (logior code-addr other-pointer-lowtag))
            (flet ((relativize (slot &aux (x (sap-ref-word (int-sap ptr) (ash slot word-shift))))
                     (if (in-bounds-p x code-bounds)
                         (format nil "CS+0x~x" (- x (bounds-low code-bounds)))
                         (format nil "0x~x" x))))
+             ;; (format t "OLA 5 fdefn-widetag B~%")
              (format output " .quad 0x~x, 0x~x, ~a, ~a~%"
                      (sap-ref-word (int-sap ptr) 0)
                      (sap-ref-word (int-sap ptr) 8)
                      (relativize fdefn-fun-slot)
-                     (relativize fdefn-raw-addr-slot)))
+                     (relativize fdefn-raw-addr-slot))
+             ;; (format t "OLA 5 fdefn-widetag C~%")
+             )
            (incf code-addr (* 4 n-word-bytes))))
         (#.funcallable-instance-widetag
+         ;; (format t "OLA 5 funcallable-instance-widetag ~%") (force-output)
          (unless seen-gfs
            (setq seen-gfs t)
            (when seen-trampolines
@@ -1093,12 +1102,12 @@
                 (name (and (> (length (the simple-vector slots)) +gf-name-slot+)
                            (svref slots +gf-name-slot+)))
                 (c-name
-                 (c-name
-                  (if (or (not name)
-                          (eql (get-lisp-obj-address name) unbound-marker-widetag))
-                      "unnamed"
-                      (fun-name-from-core name core))
-                  core pp-state "G")))
+                  (c-name
+                   (if (or (not name)
+                           (eql (get-lisp-obj-address name) unbound-marker-widetag))
+                       "unnamed"
+                       (fun-name-from-core name core))
+                   core pp-state "G")))
            (format output "~a:~% .size ~0@*~a, 48~%" (c-symbol-quote c-name))
            (format output " .quad 0x~x, .+24, ~:[~;CS+~]0x~x~{, 0x~x~}~%"
                    (sap-ref-word sap 0)
@@ -1107,13 +1116,13 @@
                    (loop for i from (ash 3 word-shift) by n-word-bytes repeat 3
                          collect (sap-ref-word sap i))))
          (incf code-addr (* 6 n-word-bytes))))))
-
+  ;; (format t "OLA 6~%") (force-output)
   ;; coreparse uses the 'lisp_jit_code' symbol to set varyobj_free_pointer
   ;; The intent is that compilation to memory can use this reserved area
   ;; (if space remains) so that profilers can associate a C symbol with the
   ;; program counter range. It's better than nothing.
   (format output "~a:~%" (labelize "lisp_jit_code"))
-
+  ;; (format t "OLA 7~%") (force-output)
   ;; Pad so that non-lisp code can't be colocated on a GC page.
   ;; (Lack of Lisp object headers in C code is the issue)
   (let ((aligned-end (align-up end-loc 4096)))
@@ -1129,6 +1138,7 @@
                 nwords)
         (when (plusp nwords)
           (format output " .fill ~d~%" (* nwords n-word-bytes))))))
+  ;; (format t "OLA 8~%") (force-output)
   ;; Extend with 1 MB of filler
   (format output " .fill ~D~%~alisp_code_end:
  .size lisp_jit_code, .-lisp_jit_code~%"
@@ -1575,6 +1585,25 @@
          (aver (= (%vector-raw-bits core-header 0) core-magic))))
   core-offset)
 
+#+win32
+(defun create-file-view (stream size offset)
+  (declare (type (integer 0 #.(1- (expt 2 32))) size offset))
+  (let* ((handle (sb-sys:fd-stream-fd stream))
+         ;; PAGE_READONLY = 2
+         (mapping (sb-win32:create-file-mapping handle nil 2 0 size nil)))
+    (unless (plusp mapping)
+      (error "failed to create file mapping"))
+    ;; FILE_MAP_COPY = 1
+    (let ((sap (sb-win32:map-view-of-file mapping 1 0 offset 0)))
+      (sb-win32:close-handle mapping)
+      (format t "create-file-view: ~x -- ~x~%"
+              (sb-sys:sap-int sap)
+              (+ (sb-sys:sap-int sap) (- size offset)))
+      (force-output)
+      (when (zerop (sb-sys:sap-int sap))
+        (error "failed to map view of file"))
+      sap)))
+
 (macrolet ((do-core-header-entry (((id-var len-var ptr-var) buffer) &body body)
              `(let ((,ptr-var 1))
                 (loop
@@ -1603,16 +1632,22 @@
                 (unwind-protect
                      (progn
                        (setq ,sap-var
+                             #-win32
                              (sb-posix:mmap nil
                                             (* ,npages +backend-page-bytes+)
                                             (logior sb-posix:prot-read sb-posix:prot-write)
                                             sb-posix:map-private
                                             (sb-sys:fd-stream-fd ,stream)
                                             ;; Skip the core header
-                                            (+ ,start +backend-page-bytes+)))
+                                            (+ ,start +backend-page-bytes+))
+                             #+win32
+                             (create-file-view ,stream
+                                               (* ,npages +backend-page-bytes+)
+                                               (+ ,start +backend-page-bytes+)))
                        ,@body)
                   (when ,sap-var
-                    (sb-posix:munmap ,sap-var (* ,npages +backend-page-bytes+)))))))
+                    #-win32 (sb-posix:munmap ,sap-var (* ,npages +backend-page-bytes+))
+                    #+win32 (sb-win32:unmap-view-of-file ,sap-var))))))
 
 ;;; Given a native SBCL '.core' file, or one attached to the end of an executable,
 ;;; separate it into pieces.
@@ -1623,7 +1658,7 @@
 ;;; is for linking in to a binary that needs no "--core" argument.
 (defun split-core
     (input-pathname asm-pathname
-     &key enable-pie (verbose nil)
+     &key enable-pie (verbose t)
      &aux (split-core-pathname
            (merge-pathnames (make-pathname :type "core") asm-pathname))
           (elf-core-pathname
@@ -1696,6 +1731,11 @@
                  (format t "PTE: page=~5x~40tbytes=~8x~%" data-page nbytes))
                (push (cons data-page nbytes) copy-actions)
                (decf data-page page-adjust)))))
+        (format t "spaces: ~a~%" spaces) (force-output)
+        (loop for i from 0
+              for space in spaces
+              do (format t "space end: ~x~%" (space-end space))
+                 (force-output))
         (let ((buffer (make-array +backend-page-bytes+
                                   :element-type '(unsigned-byte 8)))
               (filepos))
