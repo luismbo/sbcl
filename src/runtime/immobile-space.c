@@ -238,19 +238,19 @@ static int get_freeish_page(int hint_page, int attributes)
 /// objects and at most one other alignment.
 #define MAX_SIZE_CLASSES 10
 #define MAX_HINTS_PER_CLASS 2
-long page_hints[MAX_SIZE_CLASSES*MAX_HINTS_PER_CLASS];
-static inline int hint_attributes(long hint) { return hint & 0xFFFFFFFF; }
-static int hint_page(long hint) { return hint>>32; }
-static long make_hint(int page, int attributes) {
-    return ((long)page << 32) | attributes;
+uword_t page_hints[MAX_SIZE_CLASSES*MAX_HINTS_PER_CLASS];
+static inline int hint_attributes(uword_t hint) { return hint & 0xFFFFFFFF; }
+static int hint_page(uword_t hint) { return hint>>32; }
+static uword_t make_hint(int page, int attributes) {
+    return ((uword_t)page << 32) | attributes;
 }
 
 static int get_hint(int attributes, int *page)
 {
-    long hint;
+    uword_t hint;
     unsigned int size = attributes >> 16;
     int hint_index = size - 2, limit = hint_index + 1, free_slot = -1;
-    if (hint_index > (int)(sizeof page_hints / sizeof (long)))
+    if (hint_index > (int)(sizeof page_hints / sizeof (uword_t)))
         lose("Unexpectedly large fixedobj allocation request");
     for ( ; hint_index <= limit; ++hint_index ) {
 #ifdef __ATOMIC_SEQ_CST
