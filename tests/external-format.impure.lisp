@@ -17,8 +17,8 @@
 
 (defmacro do-external-formats ((xf) &body body)
   (let ((nxf (gensym)))
-    `(loop for ,nxf being the hash-values of sb-impl::*external-formats*
-        do (let ((,xf (first (sb-impl::ef-names ,nxf))))
+    `(loop for ,nxf being the hash-values of sb-impl::**character-codings**
+        do (let ((,xf (first (sb-impl::cc-names ,nxf))))
              ,@body))))
 
 (defvar *test-path* (scratch-file-name))

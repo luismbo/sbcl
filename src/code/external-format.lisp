@@ -1074,7 +1074,7 @@ Experimental."
 
 #-win32
 (defun unix-default-codeset ()
-  (let ((code-set (or #- android
+  (let ((code-set (or #-android
                       (alien-funcall
                        (extern-alien
                         "nl_langinfo"
