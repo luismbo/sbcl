@@ -26,7 +26,6 @@ else
     SBCL_PREFIX="/usr/local"
 fi
 SBCL_XC_HOST="sbcl --no-userinit --no-sysinit"
-export SBCL_XC_HOST
 
 # Parse command-line options.
 bad_option() {
@@ -37,8 +36,7 @@ bad_option() {
 
 WITH_FEATURES=""
 WITHOUT_FEATURES=""
-FANCY_FEATURES=":sb-core-compression :sb-xref-for-internals"
-BUILD_FEATURES=""
+FANCY_FEATURES=":sb-core-compression :sb-xref-for-internals :sb-after-xc-core"
 
 fancy=false
 some_options=false
@@ -53,7 +51,7 @@ do
         optarg=`expr "X$option" : '[^=]*=\(.*\)'` || optarg_ok=false
         option=`expr "X$option" : 'X\([^=]*=\).*'`
         ;;
-      --with*|--build*)
+      --with*)
         optarg=`expr "X$option" : 'X--[^-]*-\(.*\)'` \
             || bad_option "Malformed feature toggle: $option"
         option=`expr "X$option" : 'X\(--[^-]*\).*'`
@@ -92,12 +90,8 @@ do
 	;;
       --fancy)
         WITH_FEATURES="$WITH_FEATURES $FANCY_FEATURES"
-        BUILD_FEATURES="$BUILD_FEATURES :sb-after-xc-core"
         # Lower down we add :sb-thread for platforms where it can be built.
         fancy=true
-        ;;
-      --build)
-        BUILD_FEATURES="$BUILD_FEATURES :$optarg"
         ;;
       -*)
         bad_option "Unknown command-line option to $0: \"$option\""
@@ -107,7 +101,7 @@ do
         then
             bad_option "Unknown command-line option to $0: \"$option\""
         else
-            legacy_xc_spec=$option
+            SBCL_XC_HOST=$option
         fi
         ;;
   esac
@@ -123,12 +117,6 @@ then
     echo "ERROR: Both customize-target-features.lisp, and feature-options"
     echo "to make.sh present -- cannot use both at the same time."
     exit 1
-fi
-
-# Previously XC host was provided as a positional argument.
-if test -n "$legacy_xc_spec"
-then
-    SBCL_XC_HOST="$legacy_xc_spec"
 fi
 
 if test "$print_help" = "yes"
@@ -225,11 +213,20 @@ EOF
   exit 1
 fi
 
+mkdir -p output
+echo "SBCL_TEST_HOST=\"$SBCL_XC_HOST\"" > output/build-config
+. output/build-config # may come out differently due to escaping
+
+if ! echo '(lisp-implementation-type)' | $SBCL_TEST_HOST; then
+    echo "No working host Common Lisp implementation."
+    echo 'See ./INSTALL, the "SOURCE DISTRIBUTION" section'
+    exit 1
+fi
+
 # Running make.sh with different options without clean.sh in the middle
 # can break things.
 sh clean.sh
 
-mkdir -p output
 # Save prefix for make and install.sh.
 echo "SBCL_PREFIX='$SBCL_PREFIX'" > output/prefix.def
 echo "$SBCL_DYNAMIC_SPACE_SIZE" > output/dynamic-space-size.txt
@@ -254,7 +251,6 @@ find_gnumake
 
 echo "GNUMAKE=\"$GNUMAKE\"; export GNUMAKE" >> output/build-config
 echo "SBCL_XC_HOST=\"$SBCL_XC_HOST\"; export SBCL_XC_HOST" >> output/build-config
-echo "legacy_xc_spec=\"$legacy_xc_spec\"; export legacy_xc_spec" >> output/build-config
 if [ -n "$SBCL_HOST_LOCATION" ]; then
     echo "SBCL_HOST_LOCATION=\"$SBCL_HOST_LOCATION\"; export SBCL_HOST_LOCATION" >> output/build-config
 fi
@@ -451,13 +447,6 @@ case "$sbcl_os" in
     ;;
 esac
 
-bf=`pwd`/build-features.lisp-expr
-echo //initializing $bf
-echo ';;;; This is a machine-generated file.' > $bf
-echo ';;;; Please do not edit it by hand.' >> $bf
-echo ';;;; See make-config.sh.' >> $bf
-echo "($BUILD_FEATURES)" >> $bf
-
 ltf=`pwd`/local-target-features.lisp-expr
 echo //initializing $ltf
 echo ';;;; This is a machine-generated file.' > $ltf
@@ -581,7 +570,7 @@ case "$sbcl_os" in
             printf ' :mach-exception-handler' >> $ltf
             darwin_version=`uname -r`
             darwin_version_major=${DARWIN_VERSION_MAJOR:-${darwin_version%%.*}}
-    
+
             if (( 8 < $darwin_version_major )); then
 	        printf ' :inode64' >> $ltf
             fi
@@ -626,13 +615,6 @@ case "$sbcl_os" in
     *)
         echo unsupported OS type: `uname`
         exit 1
-        ;;
-esac
-case "$sbcl_os" in
-    win32)
-        ;;
-    *)
-        printf ' :relocatable-heap' >> $ltf
         ;;
 esac
 cd "$original_dir"
@@ -823,4 +805,3 @@ if [ -n "$SBCL_HOST_LOCATION" ]; then
     rsync --delete-after -a output/ "$SBCL_HOST_LOCATION/output/"
     rsync -a local-target-features.lisp-expr version.lisp-expr "$SBCL_HOST_LOCATION/"
 fi
-

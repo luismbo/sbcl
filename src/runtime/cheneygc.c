@@ -82,6 +82,15 @@ lispobj  copy_large_object(lispobj object, sword_t nwords, int page_type_flag) {
     return copy_object(object,nwords);
 }
 
+/*
+ * This flag is needed for compatibility with gencgc.
+ * In theory, it says to splat a nonzero byte pattern over newly allocated
+ * memory before giving the block to Lisp, to verify that Lisp is able to deal
+ * with non-pre-zeroed memory.
+ * In practice, that's not how cheneygc works.
+ */
+char gc_allocate_dirty = 0;
+
 /* Note: The generic GC interface we're implementing passes us a
  * last_generation argument. That's meaningless for us, since we're
  * not a generational GC. So we ignore it. */
@@ -326,7 +335,7 @@ print_garbage(lispobj *from_space, lispobj *from_space_free_pointer)
 
 /* weak pointers */
 
-static sword_t
+sword_t
 scav_weak_pointer(lispobj *where, lispobj object)
 {
     /* Do not let GC scavenge the value slot of the weak pointer */
@@ -353,7 +362,6 @@ void
 gc_init(void)
 {
     weakobj_init();
-    scavtab[WEAK_POINTER_WIDETAG] = scav_weak_pointer;
 }
 
 /* noise to manipulate the gc trigger stuff */

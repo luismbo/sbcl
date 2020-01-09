@@ -172,10 +172,7 @@
   (let ((alien-type (lvar-type alien)))
     (unless (alien-type-type-p alien-type)
       (give-up-ir1-transform))
-    (let ((alien-type (alien-type-type-alien-type alien-type)))
-      (if (alien-type-p alien-type)
-          alien-type
-          (give-up-ir1-transform)))))
+    (alien-type-type-alien-type alien-type)))
 
 (defun find-deref-element-type (alien)
   (let ((alien-type (find-deref-alien-type alien)))
@@ -731,12 +728,12 @@
         (cond
           #+arm-softfp
           ((and lvar
-                (proper-list-of-length-p result-tns 3)
-                (symbolp (third result-tns)))
+                (fourth result-tns))
            (emit-template call block
-                          (template-or-lose (third result-tns))
-                          (reference-tn-list (butlast result-tns) nil)
-                          (reference-tn (car (ir2-lvar-locs (lvar-info lvar))) t)))
+                          (template-or-lose (fourth result-tns))
+                          (reference-tn-list (butlast result-tns 2) nil)
+                          (reference-tn (third result-tns) t))
+           (move-lvar-result call block (list (third result-tns)) lvar))
           (t
            (move-lvar-result call block result-tns lvar)))))))
 

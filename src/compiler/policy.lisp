@@ -18,6 +18,14 @@
 ;;; global policy restrictions as a POLICY object or nil
 (defvar *policy-min* nil)
 (defvar *policy-max* nil)
+;;; *POLICY* holds the current global compiler policy information, as
+;;; a POLICY object mapping from the compiler-assigned index (unique per
+;;; quality name) to quality value.
+;;; This used to be an alist, but tail-sharing was never really possible
+;;; because for deterministic comparison the list was always freshly
+;;; consed so that destructive sorting could be done for canonicalization.
+(declaim (type policy *policy*)
+         (type (or policy null) *policy-min* *policy-max*))
 
 (defun restrict-compiler-policy (&optional quality (min 0) (max 3))
   "Assign a minimum value to an optimization quality. QUALITY is the name of
@@ -75,6 +83,7 @@ See also :POLICY option in WITH-COMPILATION-UNIT."
   (getter nil :read-only t)
   (documentation nil :read-only t)
   (values-documentation nil :read-only t))
+(declaim (freeze-type policy-dependent-quality))
 
 ;;; names of recognized optimization policy qualities
 (declaim (simple-vector **policy-dependent-qualities**))
@@ -146,15 +155,6 @@ See also :POLICY option in WITH-COMPILATION-UNIT."
      t)
     (otherwise
      nil)))
-
-;;; *POLICY* holds the current global compiler policy information, as
-;;; a POLICY object mapping from the compiler-assigned index (unique per
-;;; quality name) to quality value.
-;;; This used to be an alist, but tail-sharing was never really possible
-;;; because for deterministic comparison the list was always freshly
-;;; consed so that destructive sorting could be done for canonicalization.
-(declaim (type policy *policy*)
-         (type (or policy null) *policy-min* *policy-max*))
 
 ;; ANSI-specified default of 1 for each quality.
 (defglobal **baseline-policy** nil)

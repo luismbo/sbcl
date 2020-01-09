@@ -17,13 +17,16 @@
 (with-test (:name :weak-vector)
   (let ((a *weak-vect*)
         (random-symbol (make-symbol "FRED")))
-    (setf (aref a 0) (cons 'foo 'bar)
-          (aref a 1) (format nil "Time is: ~D~%" (get-internal-real-time))
-          (aref a 2) 'interned-symbol
-          (aref a 3) random-symbol
-          (aref a 4) 18
-          (aref a 5) (+ most-positive-fixnum 1 (random 100) (random 100))
-          (aref a 6) (make-hash-table))
+    (flet ((x ()
+             (setf (aref a 0) (cons 'foo 'bar)
+                   (aref a 1) (format nil "Time is: ~D~%" (get-internal-real-time))
+                   (aref a 2) 'interned-symbol
+                   (aref a 3) random-symbol
+                   (aref a 4) 18
+                   (aref a 5) (+ most-positive-fixnum 1 (random 100) (random 100))
+                   (aref a 6) (make-hash-table))))
+      (declare (notinline x)) ;; Leave all the values below the stack pointer for
+      (x))                    ;; scrub-control-stack to work
     (assert (weak-vector-p a))
     (sb-sys:scrub-control-stack)
     (gc)
@@ -165,8 +168,14 @@
 
 #+immobile-space
 (with-test (:name :generation-of-fdefn)
+  ;; generation-of broke when fdefns stopped storing a generation in word 0
   (assert (= (sb-kernel:generation-of (sb-kernel::find-fdefn 'car))
              sb-vm:+pseudo-static-generation+)))
+
+(with-test (:name :static-fdefn-space)
+  (sb-int:dovector (name sb-vm:+static-fdefns+)
+    (assert (eq (sb-ext:heap-allocated-p (sb-kernel::find-fdefn name))
+                (or #+immobile-code :immobile :static)))))
 
 ;;; SB-EXT:GENERATION-* accessors returned bogus values for generation > 0
 (with-test (:name :bug-529014 :skipped-on (not :gencgc))

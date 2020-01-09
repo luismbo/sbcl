@@ -71,14 +71,20 @@
   ;;    83FA61             CMP EDX, 97
   ;;    480F44142538F94B20 CMOVEQ RDX, [#x204BF938]  ; *PRINT-BASE*
   ;; (TODO: could use "CMOVEQ RDX, [RIP-n]" in immobile code)
-  (assert (= (length (disasm 0 '*print-base*)) 3))
+  (let ((text (disasm 0 '*print-base*)))
+    (assert (= (length text) 3)) ; number of lines
+    ;; two lines should be annotated with *PRINT-BASE*
+    (assert (= (loop for line in text count (search "*PRINT-BASE*" line)) 2)))
 
   ;; When symbol SC is CONSTANT:
   ;;    498B9578290000     MOV RDX, [R13+disp]       ; tls: FOO
   ;;    488B059EFFFFFF     MOV RAX, [RIP-98]         ; 'FOO
   ;;    83FA61             CMP EDX, 97
   ;;    480F4450F9         CMOVEQ RDX, [RAX-7]
-  (assert (= (length (disasm 0 'foo)) 4)))
+  (let ((text (disasm 0 'foo)))
+    (assert (= (length text) 4))
+    ;; two lines should be annotated with FOO
+    (assert (= (loop for line in text count (search "FOO" line)) 2))))
 
 (defvar *blub*) ; immobile space
 (defvar blub)   ; dynamic space
@@ -94,7 +100,10 @@
   ;;    83FA61             CMP EDX, 97
   ;;    480F44142518A24C20 CMOVEQ RDX, [#x204CA218] ; *BLUB*
   ;; (TODO: could use "CMOVEQ RDX, [RIP-n]" in immobile code)
-  (assert (= (length (disasm 0 '*blub*)) 4))
+  (let ((text (disasm 0 '*blub*)))
+    (assert (= (length text) 4))
+    ;; two lines should be annotated with *BLUB*
+    (assert (= (loop for line in text count (search "*BLUB*" line)) 2)))
 
   ;; When symbol SC is constant:
   ;;    488B05B3FFFFFF     MOV RAX, [RIP-77]          ; 'BLUB"
@@ -537,3 +546,152 @@
               (assert (eq (funcall f input)
                           (let ((cell (assoc input cases)))
                             (if cell (cadr cell) :feep)))))))))))
+
+(defun count-assembly-lines (f)
+  (length (split-string (with-output-to-string (string)
+                          (disassemble f :stream string))
+                        #\newline)))
+
+(with-test (:name :peephole-optimizations-1)
+  ;; The test does not check that both the load and the shift
+  ;; have been sized as :dword instead of :qword, but it should.
+  (let ((f '(lambda (x)
+             ;; eliminate arg count check, type check
+             (declare (optimize speed (safety 0)))
+             (ldb (byte 3 0) (sb-kernel:symbol-hash x)))))
+    (let ((unoptimized (let ((sb-c::*do-instcombine-pass* nil))
+                         (checked-compile f)))
+          (instcombined (checked-compile f)))
+      (assert (= (count-assembly-lines instcombined)
+                 (- (count-assembly-lines unoptimized) 1)))))
+
+  (let ((f '(lambda (x)
+             ;; eliminate arg count check, type check
+             (declare (optimize speed (safety 0)))
+             (ldb (byte 5 2) (sb-kernel:symbol-hash x)))))
+    (let ((unoptimized (let ((sb-c::*do-instcombine-pass* nil))
+                         (checked-compile f)))
+          (instcombined (checked-compile f)))
+      (assert (= (count-assembly-lines instcombined)
+                 (- (count-assembly-lines unoptimized) 2))))))
+
+(with-test (:name :array-subtype-dispatch-table)
+  (assert (eql (sb-kernel:code-jump-table-words
+                (sb-kernel:fun-code-header #'sb-kernel:vector-subseq*))
+               ;; n-widetags divided by 4, plus jump table count word.
+               65)))
+
+sb-vm::(define-vop (cl-user::test)
+  (:generator 0
+   ;; pointless to resize to :qword, but the rule won't try to apply itself
+   ;; to :dword because zeroing the upper 32 bits is a visible effect.
+   (inst mov (reg-in-size rax-tn :qword) (reg-in-size rcx-tn :qword))
+   (inst mov rax-tn rcx-tn)))
+(with-test (:name :mov-mov-elim-ignore-resized-reg) ; just don't crash
+  (checked-compile '(lambda () (sb-sys:%primitive test) 0)))
+
+(defstruct a)
+(defstruct (achild (:include a)))
+(defstruct (agrandchild (:include achild)))
+(defstruct (achild2 (:include a)))
+(defstruct b)
+(defstruct c)
+(defstruct d)
+(defstruct e)
+(defstruct (echild (:include e)))
+(defstruct f)
+
+(declaim (freeze-type a b c d e f))
+(defun typecase-jump-table (x)
+  (typecase x
+    (a 'is-a)
+    (b 'is-b)
+    (c 'is-c)
+    ((or d e) 'is-d-or-e)
+    (f 'is-f)))
+(compile 'typecase-jump-table)
+
+(with-test (:name :typecase-jump-table)
+  (assert (eql (sb-kernel:code-jump-table-words
+                (sb-kernel:fun-code-header #'typecase-jump-table))
+               ;; 6 cases including NIL return, plus the size
+               7)))
+
+(defun assert-thereis-line (lambda expect)
+  (let ((f (checked-compile lambda)))
+    (assert
+     (loop for line in (split-string (with-output-to-string (string)
+                                       (disassemble f :stream string))
+                                     #\newline)
+           ;; very brittle, as it looks for a specific register
+           thereis (search expect line)))))
+
+(with-test (:name :char-code-is-single-shr)
+  (assert-thereis-line '(lambda (x) (char-code (truly-the character x)))
+                       "SHR EDX, 7"))
+
+(import '(sb-x86-64-asm::get-gpr sb-x86-64-asm::machine-ea))
+;; to make this pass on different configurations we'd have to add
+;; some abstraction on the PC offsets on each line.
+#+nil
+(with-test (:name :simple-fun-instruction-model)
+  (let ((rax (get-gpr :qword sb-vm::rax-offset))
+        (eax (get-gpr :dword sb-vm::rax-offset))
+        (al  (get-gpr :byte  sb-vm::rax-offset))
+        (rcx (get-gpr :qword sb-vm::rcx-offset))
+        (rdx (get-gpr :qword sb-vm::rdx-offset))
+        (rsp (get-gpr :qword sb-vm::rsp-offset))
+        (rbp (get-gpr :qword sb-vm::rbp-offset)))
+    (flet ((compare (a b)
+             (and (eql (car a) (car b)) ; PC offs
+                  (string= (cadr a) (cadr b)) ; inst name
+                  (equalp (cddr a) (cddr b)))))
+      (mapc (lambda (a b)
+              (unless (compare a b)
+                (error "Didn't match: ~S ~S" a b)))
+            (get-simple-fun-instruction-model #'car)
+            `(( 0 pop (#s(machine-ea :base 5 :disp 8) . :qword))
+              ( 3 cmp ,rcx 2)
+              ( 7 jmp :ne 29)
+              ( 9 mov ,rsp ,rbp)
+              (12 lea ,eax (#s(machine-ea :base 2 :disp -7) . :dword))
+              (15 test ,al 15)
+              (17 jmp :ne +5) ; = PC offs 24
+              (19 mov ,rax ,rdx)
+              (22 jmp +4) ; = PC offs 28
+              (24 break 71)
+              (28 mov ,rdx (#s(machine-ea :base 0 :disp -7) . :qword))
+              (32 mov ,rsp ,rbp)
+              (35 clc)
+              (36 pop ,rbp)
+              (37 ret)
+              (38 break 16))))))
+
+(with-test (:name :typep-compiled-with-jump-table)
+  ;; Expect to reference the CTYPE layout because %%TYPEP declares its argument
+  ;; to be that.  Expect to reference the UNKNOWN-TYPE layout because of an
+  ;; explicit call to UNKNOWN-TYPE-P. I do not know why NUMERIC-TYPE is there.
+  (let ((names
+          (mapcar (lambda (x)
+                    (sb-kernel:classoid-name (sb-kernel:layout-classoid x)))
+                  (ctu:find-code-constants #'sb-kernel:%%typep :type 'sb-kernel:layout))))
+    (assert (null (set-difference names
+                                  '(sb-kernel:ctype
+                                    sb-kernel:unknown-type
+                                    sb-kernel:numeric-type
+                                    #-immobile-space null))))))
+
+;; lp#1857861
+(with-test (:name :undecoded-immediate-data)
+  (let ((f (compile nil '(lambda (x) (when (floatp x) 0.0))))
+        (expect (format nil ", ~D" sb-vm:single-float-widetag)))
+     (loop for line in (split-string (with-output-to-string (string)
+                                       (disassemble f :stream string))
+                                     #\newline)
+             thereis (let ((p (search expect line)))
+                       ;; expect no end-of-line comment
+                       (and p (not (find #\; line :start p)))))))
+
+(with-test (:name :thread-local-unbound)
+  (let ((c (nth-value 1 (ignore-errors sb-c::*compilation*))))
+    (assert (eq (cell-error-name c) 'sb-c::*compilation*))))

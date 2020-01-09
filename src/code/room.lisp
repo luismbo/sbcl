@@ -26,6 +26,7 @@
     (kind nil
           :type (member :other :closure :instance :list :code :fdefn)
           :read-only t))
+(declaim (freeze-type room-info))
 
 (defun room-info-type-name (info)
     (if (specialized-array-element-type-properties-p info)
@@ -1091,7 +1092,7 @@ We could try a few things to mitigate this:
                   (,functoid (%funcallable-instance-layout ,obj) ,@more)
                   (,functoid (%funcallable-instance-fun ,obj) ,@more)
                   (ecase (layout-bitmap .l.)
-                    (#.sb-kernel::+layout-all-tagged+
+                    (#.sb-kernel:+layout-all-tagged+
                      (loop for .i. from instance-data-start ; exclude layout
                            to (- (get-closure-length ,obj) funcallable-instance-info-offset)
                            do (,functoid (%funcallable-instance-info ,obj .i.) ,@more)))
@@ -1442,7 +1443,7 @@ We could try a few things to mitigate this:
         (prev 0))
     (dolist (x list)
       (let ((n  (ash (sb-kernel:symbol-tls-index x) (- sb-vm:word-shift))))
-        (when (and (> n sb-thread::tls-index-start)
+        (when (and (> n sb-vm::primitive-thread-object-length)
                    (> n (1+ prev)))
           (format t "(unused)~%"))
         (format t "~5d = ~s~%" n x)

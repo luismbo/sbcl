@@ -477,3 +477,33 @@
       (assert (= (funcall g x) (position x (opaque-identity items) :from-end t))))
     (assert (not (funcall f 'blah)))
     (assert (not (funcall g 'blah)))))
+
+(with-test (:name :hash-based-position-type-derivation)
+  ;; should neither crash nor warn about NIL being fed into ASH
+  (checked-compile '(lambda (x)
+                     (declare (type (member a b) x))
+                     (ash 1 (position x #(a b c d d e f))))))
+
+(with-test (:name :position-empty-seq)
+  (assert (not (funcall (checked-compile '(lambda (x) (position x #()))) 1))))
+
+(with-test (:name :hash-based-memq)
+  (let* ((f (checked-compile
+             '(lambda (x)
+               (if (member x '(:and :or :not and or not)) t nil))))
+         (consts (ctu:find-code-constants f :type 'vector)))
+    ;; Since there's no canonical order within a bin - we don't know
+    ;; whether bin 0 is {:AND,AND} or {AND,:AND} - this gets tricky to check.
+    ;; This is unfortunately a change-detector (if we alter SXHASH, or anything).
+    (assert (equalp (car consts) #(:and and :not not :or or 0 0)))))
+
+(with-test (:name :memq-empty-seq)
+  (assert (not (funcall (checked-compile '(lambda (x) (member x '()))) 1)))
+  (assert (not (funcall (checked-compile '(lambda (x) (sb-int:memq x '()))) 1))))
+
+(with-test (:name :adjoin-key-eq-comparable)
+  (checked-compile-and-assert
+      ()
+      `(lambda (x y)
+         (adjoin (list x) y :key 'car))
+    ((3d0 '((3d0))) '((3d0)) :test #'equal)))

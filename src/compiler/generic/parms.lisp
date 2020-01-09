@@ -93,7 +93,7 @@
                           ;; TODO: linkage-table could move with code, if the CPU
                           ;; prefers PC-relative jumps, and we emit better code
                           ;; (which we don't- for x86 we jmp via RBX always)
-                          #+relocatable-heap (member space '(fixedobj varyobj)))
+                          (member space '(fixedobj varyobj)))
                         (start ptr)
                         (end (+ ptr size)))
                    (setf ptr end)
@@ -116,7 +116,7 @@
                                       ,(- end start)))))))))))
       `(progn
          ,@small-space-forms
-         ,(defconstantish (or #+relocatable-heap t) 'dynamic-space-start
+         ,(defconstantish t 'dynamic-space-start
             (or dynamic-space-start* ptr))
          (defconstant default-dynamic-space-size
            ;; Build-time make-config.sh option "--dynamic-space-size" overrides
@@ -150,11 +150,13 @@
     sb-unix::signal-handler-callback)
   #'equal)
 
-;;; Static symbols that C code must be able to assign to,
+;;; (potentially) static symbols that C code must be able to assign to,
 ;;; as contrasted with static for other reasons such as:
 ;;;  - garbage collections roots (namely NIL)
 ;;;  - other symbols that Lisp codegen must hardwire (T)
 ;;;  - static for efficiency of access but need not be
+;;; On #+sb-thread builds, these are not static, because access to them
+;;; is via the TLS, not the symbol.
 (defconstant-eqx !per-thread-c-interface-symbols
   `((*free-interrupt-context-index* 0)
     (sb-sys:*allow-with-interrupts* t)
@@ -210,10 +212,6 @@
 
     ;; dynamic runtime linking support
     #+sb-dynamic-core +required-foreign-symbols+
-
-    ;; List of Lisp specials bindings made by create_thread_struct()
-    ;; excluding the names in !PER-THREAD-C-INTERFACE-SYMBOLS.
-    sb-thread::*thread-initial-bindings*
 
     ;;; The following symbols aren't strictly required to be static
     ;;; - they are not accessed from C - but we make them static in order

@@ -11,6 +11,24 @@
 
 (in-package "SB-PRETTY")
 
+;;; Ancestral types
+(defstruct (queued-op (:constructor nil) (:copier nil))
+  (posn 0 :type posn))
+
+(defstruct (block-end (:include queued-op) (:copier nil))
+  (suffix nil :type (or null simple-string)))
+
+(defstruct (section-start (:include queued-op)
+                          (:constructor nil)
+                          (:copier nil))
+  (depth 0 :type index)
+  (section-end nil :type (or null newline block-end)))
+
+(defstruct (newline (:include section-start) (:copier nil))
+  (kind (missing-arg)
+        :type (member :linear :fill :miser :literal :mandatory)))
+(declaim (freeze-type newline))
+
 #-sb-fluid (declaim (inline index-posn posn-index posn-column))
 (defun index-posn (index stream)
   (declare (type index index) (type pretty-stream stream)
@@ -120,6 +138,7 @@
   (suffix-length 0 :type index)
   ;; The line number
   (section-start-line 0 :type index))
+(declaim (freeze-type logical-block))
 
 (defun really-start-logical-block (stream column prefix suffix)
   (let* ((blocks (pretty-stream-blocks stream))
@@ -213,7 +232,7 @@
          ,entry))))
 
 (defun enqueue-newline (stream kind)
-  (let* ((depth (length (pretty-stream-pending-blocks stream)))
+  (let* ((depth (pretty-stream-pending-blocks-length stream))
          (newline (enqueue stream newline :kind kind :depth depth)))
     (dolist (entry (pretty-stream-queue-tail stream))
       (when (and (not (eq newline entry))
@@ -227,6 +246,7 @@
                         (:copier nil))
   (kind (missing-arg) :type (member :block :current))
   (amount 0 :type fixnum))
+(declaim (freeze-type indentation))
 
 (defun enqueue-indent (stream kind amount)
   (enqueue stream indentation :kind kind :amount amount))
@@ -236,6 +256,7 @@
   (block-end nil :type (or null block-end))
   (prefix nil :type (or null simple-string))
   (suffix nil :type (or null simple-string)))
+(declaim (freeze-type block-start))
 
 (defun start-logical-block (stream prefix per-line-p suffix)
   ;; (In the PPRINT-LOGICAL-BLOCK form which calls us,
@@ -251,15 +272,15 @@
     (pretty-sout stream prefix 0 (length prefix)))
   (unless (typep suffix 'simple-string)
     (setq suffix (coerce suffix '(simple-array character (*)))))
-  (let* ((pending-blocks (pretty-stream-pending-blocks stream))
-         (start (enqueue stream block-start
-                         :prefix (and per-line-p prefix)
-                         :suffix suffix
-                         :depth (length pending-blocks))))
-    (setf (pretty-stream-pending-blocks stream)
-          (cons start pending-blocks))))
+  (let ((start (enqueue stream block-start
+                        :prefix (and per-line-p prefix)
+                        :suffix suffix
+                        :depth (pretty-stream-pending-blocks-length stream))))
+    (push start (pretty-stream-pending-blocks stream))
+    (incf (pretty-stream-pending-blocks-length stream))))
 
 (defun end-logical-block (stream)
+  (decf (pretty-stream-pending-blocks-length stream))
   (let* ((start (pop (pretty-stream-pending-blocks stream)))
          (suffix (block-start-suffix start))
          (end (enqueue stream block-end :suffix suffix)))
@@ -273,6 +294,7 @@
   (relativep nil :type (member t nil))
   (colnum 0 :type column)
   (colinc 0 :type column))
+(declaim (freeze-type queued-op)) ; and all subtypes
 
 (defun enqueue-tab (stream kind colnum colinc)
   (multiple-value-bind (sectionp relativep)
@@ -780,7 +802,9 @@ line break."
 (defun copy-pprint-dispatch (&optional (table *print-pprint-dispatch*))
   (declare (type (or pprint-dispatch-table null) table))
   (let* ((orig (or table *initial-pprint-dispatch-table*))
-         (new (make-pprint-dispatch-table (copy-list (pp-dispatch-entries orig)))))
+         (new (make-pprint-dispatch-table (copy-list (pp-dispatch-entries orig))
+                                          (pp-dispatch-number-matchable-p orig)
+                                          (pp-dispatch-only-initial-entries orig))))
     (replace/eql-hash-table (pp-dispatch-cons-entries new)
                             (pp-dispatch-cons-entries orig))
     new))
@@ -792,16 +816,19 @@ line break."
           (when (or (not (numberp object)) (pp-dispatch-number-matchable-p table))
             (let ((cons-entry
                    (and (consp object)
-                        (gethash (car object) (pp-dispatch-cons-entries table)))))
-              (if (not cons-entry)
-                  (dolist (entry (pp-dispatch-entries table) nil)
-                    (when (funcall (pprint-dispatch-entry-test-fn entry) object)
-                      (return entry)))
-                  (dolist (entry (pp-dispatch-entries table) cons-entry)
-                    (when (entry< entry cons-entry)
-                      (return cons-entry))
-                    (when (funcall (pprint-dispatch-entry-test-fn entry) object)
-                      (return entry))))))))
+                        (sb-impl::gethash/eql (car object) (pp-dispatch-cons-entries table) nil))))
+              (cond ((not cons-entry)
+                     (dolist (entry (pp-dispatch-entries table) nil)
+                       (when (funcall (pprint-dispatch-entry-test-fn entry) object)
+                         (return entry))))
+                    ((pp-dispatch-only-initial-entries table)
+                     cons-entry)
+                    (t
+                     (dolist (entry (pp-dispatch-entries table) cons-entry)
+                       (when (entry< entry cons-entry)
+                         (return cons-entry))
+                       (when (funcall (pprint-dispatch-entry-test-fn entry) object)
+                         (return entry)))))))))
     (if entry
         (values (pprint-dispatch-entry-fun entry) t)
         (values #'output-ugly-object nil))))
@@ -869,7 +896,8 @@ line break."
             (if function
                 (setf (gethash key hashtable) entry)
                 (remhash key hashtable))))
-        (setf (pp-dispatch-entries table)
+        (setf (pp-dispatch-only-initial-entries table) nil
+              (pp-dispatch-entries table)
               (let ((list (delete type (pp-dispatch-entries table)
                                   :key #'pprint-dispatch-entry-type
                                   :test #'equal)))
@@ -1442,11 +1470,13 @@ line break."
   ;; it's going to be set to a copy of *INITIAL-PP-D-T* below because
   ;; it's used in WITH-STANDARD-IO-SYNTAX, and condition reportery
   ;; possibly performed in the following extent may use W-S-IO-SYNTAX.
-  (setf *standard-pprint-dispatch-table* (make-pprint-dispatch-table))
+  (setf *standard-pprint-dispatch-table* (make-pprint-dispatch-table nil nil nil))
   (setf *initial-pprint-dispatch-table* nil)
-  (let ((*print-pprint-dispatch* (make-pprint-dispatch-table)))
+  (let ((*print-pprint-dispatch* (make-pprint-dispatch-table nil nil nil)))
     (/show0 "doing SET-PPRINT-DISPATCH for regular types")
-    (set-pprint-dispatch '(and array (not (or string bit-vector))) 'pprint-array)
+    ;; Assign a lower priority than for the cons entries below, making
+    ;; fewer type tests when dispatching.
+    (set-pprint-dispatch '(and array (not (or string bit-vector))) 'pprint-array -1)
     ;; MACRO-FUNCTION must have effectively higher priority than FBOUNDP.
     ;; The implementation happens to check identical priorities in the order added,
     ;; but that's unspecified behavior.  Both must be _strictly_ lower than the
@@ -1461,7 +1491,6 @@ line break."
     (set-pprint-dispatch 'sb-impl::comma 'pprint-unquoting-comma -3)
     ;; cons cells with interesting things for the car
     (/show0 "doing SET-PPRINT-DISPATCH for CONS with interesting CAR")
-
     (dolist (magic-form '((lambda pprint-lambda)
                           ((declare declaim) pprint-declare)
 
@@ -1513,7 +1542,8 @@ line break."
       ;; The sharing of dispatch entries is inconsequential.
       (set-pprint-dispatch `(cons (member ,@(ensure-list (first magic-form))))
                            (second magic-form)))
-    (setf *initial-pprint-dispatch-table* *print-pprint-dispatch*))
+    (setf (pp-dispatch-only-initial-entries *print-pprint-dispatch*) t
+          *initial-pprint-dispatch-table* *print-pprint-dispatch*))
 
   (setf *standard-pprint-dispatch-table*
         (copy-pprint-dispatch *initial-pprint-dispatch-table*))

@@ -53,6 +53,9 @@
                            (:constructor %make-dstate
                                (alignment argument-column fun-hooks))
                            (:copier nil))
+  ;; to avoid buffer overrun at segment end, we might need to copy bytes
+  ;; here first because we access memory in chunks larger than 1 byte.
+  (scratch-buf 0 :type sb-vm:word)
   ;; offset of current pos in segment
   (cur-offs 0 :type offset)
   ;; offset of next position
@@ -62,11 +65,11 @@
   ;; the current segment
   (segment nil :type (or null segment))
   ;; true if disassembling non-lisp code, which disables interpretation
-  ;; of  bytes after a trap instruction as SC+OFFSETs.
+  ;; of bytes after a trap instruction as SC+OFFSETs.
   (foreign-code-p nil)
-  ;; to avoid buffer overrun at segment end, we might need to copy bytes
-  ;; here first because we access memory in chunks larger than 1 byte.
-  (scratch-buf (make-array 8 :element-type '(unsigned-byte 8)))
+  ;; true (the default) if PC-relative jumps should be decoded as absolute.
+  ;; No effect if the target disassembler does not implement the choice.
+  (absolutize-jumps t)
   ;; what to align to in most cases
   (alignment sb-vm:n-word-bytes :type alignment)
   (byte-order sb-c:*backend-byte-order*

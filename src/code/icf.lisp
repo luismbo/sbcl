@@ -192,10 +192,12 @@
                              (* code-slots-per-simple-fun (code-n-entries code1)))
                below (code-header-words code1)
                always (eq (code-header-ref code1 i) (code-header-ref code2 i)))
-         ;; Compare unboxed constants
-         (let ((nwords (ceiling (code-n-unboxed-data-bytes code1) n-word-bytes))
-               (sap1 (code-instructions code1))
-               (sap2 (code-instructions code2)))
+         ;; jump table word contains serial# which is arbitrary; don't compare it
+         (= (code-jump-table-words code1) (code-jump-table-words code2))
+         ;; Compare unboxed constants less 1 word which was already compared
+         (let ((nwords (1- (ceiling (code-n-unboxed-data-bytes code1) n-word-bytes)))
+               (sap1 (sap+ (code-instructions code1) n-word-bytes))
+               (sap2 (sap+ (code-instructions code2) n-word-bytes)))
            (dotimes (i nwords t)
              (unless (= (sap-ref-word sap1 (ash i word-shift))
                         (sap-ref-word sap2 (ash i word-shift)))
@@ -362,16 +364,7 @@
                                                                             (symbol-package name)))
                                                   :external))))
                                      (keyfn (x)
-                                       #+64-bit
-                                       (%code-serialno x)
-                                       ;; Creation time is an estimate of order, but
-                                       ;; frankly we shouldn't be storing times anyway,
-                                       ;; as it causes irreproducible builds.
-                                       ;; But I don't know what else to do.
-                                       #-64-bit
-                                       (sb-c::debug-source-compiled
-                                        (sb-c::compiled-debug-info-source
-                                         (%code-debug-info x))))
+                                       (%code-serialno x))
                                      (compare (a b)
                                        (let ((exported-a (exported-p a))
                                              (exported-b (exported-p b) ))

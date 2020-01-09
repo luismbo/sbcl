@@ -210,7 +210,7 @@
  ("src/code/pred" :not-host)
  ("src/compiler/generic/pinned-objects" :not-host)
 
- ("src/code/string-hash")
+ ("src/code/string-hash" :c-headers)
  ("src/code/target-sxhash" :not-host) ; needs most-fooative-foo-float constants
 
  ("src/code/list"   :not-host)
@@ -644,8 +644,9 @@
  ("src/code/target-hash-table" :not-host) ; needs "code/hash-table"
  ("src/code/final" :not-host)
  ("src/code/pprint" :not-host) ; defines WITH-PRETTY-STREAM needed by 'print'
+ ("src/code/reader" :not-host) ; needs "code/readtable"
  ("src/code/print" :not-host)
- ("src/code/reader"            :not-host) ; needs "code/readtable"
+
  ("src/code/target-stream"     :not-host) ; needs WHITESPACEP from "code/reader"
  #-win32
  ("src/code/unix-pathname"     :not-host)
@@ -829,7 +830,7 @@
   "src/code/describe-policy"
   "src/code/inspect"
   "src/code/profile"
-  #+x86-64 "src/code/aprof" ; precise allocation profiler
+  #+(and x86-64 sb-thread) "src/code/aprof" ; precise allocation profiler
   "src/code/step"
   "src/code/warm-lib"
   "src/code/alien-callback"

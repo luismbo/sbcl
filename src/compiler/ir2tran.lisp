@@ -1010,14 +1010,15 @@
                         (= (length locs) 1)))
              (values loc nil)))
           ((lvar-fun-name lvar t)
-           (let ((name (lvar-fun-name lvar t)))
-             (values (cond ((sb-vm::static-fdefn-offset name)
-                            name)
-                           (t
-                            ;; Named call to an immobile fdefn from an immobile component
-                            ;; uses the FUN-TN only to preserve liveness of the fdefn.
-                            ;; The name becomes an info arg.
-                            (make-load-time-constant-tn :fdefinition name)))
+           ;; Uncross so that we don't create a constant for SB-XC:GENSYM
+           ;; and CL:GENSYM, in case a piece of code mentions both.
+           (let ((name (uncross (lvar-fun-name lvar t))))
+             ;; Static fdefns never need a code header constant.
+             (values (if (sb-vm::static-fdefn-offset name)
+                         name
+                         ;; Calls to immobile space fdefns won't use this constant,
+                         ;; but it needs to exist for GC's pointer tracing.
+                         (make-load-time-constant-tn :fdefinition name))
                      name)))
           (t
            (values (lvar-tn node block lvar) nil)))))
@@ -1829,7 +1830,7 @@ not stack-allocated LVAR ~S." source-lvar)))))
                           (dolist (var vars)
                             ;; CLHS says "bound and then made to have no value" -- user
                             ;; should not be able to tell the difference between that and this.
-                            (about-to-modify-symbol-value var 'progv)
+                            (about-to-modify-symbol-value var 'makunbound)
                             (%primitive dynbind unbound-marker var))))
                       (,bind (vars vals)
                         (declare (optimize (speed 2) (debug 0)
@@ -1844,6 +1845,7 @@ not stack-allocated LVAR ~S." source-lvar)))))
                                  (%primitive dynbind val var))
                                (,bind (cdr vars) (cdr vals))))))
                (,bind ,vars ,vals)
+               nil
                ,@body)
           ;; Technically ANSI CL doesn't allow declarations at the
           ;; start of the cleanup form. SBCL happens to allow for

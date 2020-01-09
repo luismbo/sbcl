@@ -60,7 +60,7 @@
 os_vm_size_t dynamic_space_size = DEFAULT_DYNAMIC_SPACE_SIZE;
 os_vm_size_t thread_control_stack_size = DEFAULT_CONTROL_STACK_SIZE;
 
-sword_t (*scavtab[256])(lispobj *where, lispobj object);
+sword_t (*const scavtab[256])(lispobj *where, lispobj object);
 
 // "Transport" functions are responsible for deciding where to copy an object
 // and how many bytes to copy (usually the sizing function is inlined into the
@@ -306,13 +306,14 @@ trans_code(struct code *code)
     struct code *new_code = (struct code *) native_pointer(l_new_code);
     uword_t displacement = l_new_code - l_code;
 
-#if defined LISP_FEATURE_X86 || defined LISP_FEATURE_X86_64
+#if defined LISP_FEATURE_PPC || defined LISP_FEATURE_PPC64 || \
+    defined LISP_FEATURE_X86 || defined LISP_FEATURE_X86_64
     // Fixup absolute jump tables. These aren't recorded in code->fixups
     // because we don't need to denote an arbitrary set of places in the code.
     // The count alone suffices. A GC immediately after creating the code
     // could cause us to observe some 0 words here. Those should be ignored.
-    lispobj* jump_table = (lispobj*)code_text_start(new_code);
-    int count = *jump_table;
+    lispobj* jump_table = code_jumptable_start(new_code);
+    int count = jumptable_count(jump_table);
     int i;
     for (i = 1; i < count; ++i)
         if (jump_table[i]) jump_table[i] += displacement;
@@ -1540,6 +1541,7 @@ boolean valid_widetag_p(unsigned char widetag) {
  * initialization
  */
 
+sword_t scav_weak_pointer(lispobj *where, lispobj object);
 #include "genesis/gc-tables.h"
 
 /* Find the code object for the given pc, or return NULL on
@@ -1611,14 +1613,6 @@ int simple_fun_index(struct code* code, struct simple_fun *fun)
     return -1;
 }
 
-lispobj simple_fun_name(struct simple_fun* fun)
-{
-    struct code* code = (struct code*)fun_code_header((lispobj*)fun);
-    int index = simple_fun_index(code, fun);
-    if (index < 0) return 0;
-    return code->constants[CODE_SLOTS_PER_SIMPLE_FUN*index];
-}
-
 /* Helper for valid_lisp_pointer_p (below) and
  * conservative_root_p (gencgc).
  *
@@ -1653,7 +1647,10 @@ properly_tagged_p_internal(lispobj pointer, lispobj *start_addr)
     if (lowtag && make_lispobj(start_addr, lowtag) == pointer)
         return 1; // instant win
 
-    if (widetag == CODE_HEADER_WIDETAG) {
+    // debug_info must be assigned prior to examining a code object for simple-funs.
+    // This is how we distinguish objects that are partyway through construction.
+    // It would be wrong to read garbage bytes from the simple-fun table.
+    if (widetag == CODE_HEADER_WIDETAG && ((struct code*)start_addr)->debug_info) {
         if (functionp(pointer)) {
             lispobj* potential_fun = FUNCTION(pointer);
             if (widetag_of(potential_fun) == SIMPLE_FUN_WIDETAG &&

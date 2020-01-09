@@ -167,7 +167,7 @@
          (system-area-pointer sap-stack
                               ancestor-frame-ref/system-area-pointer
                               ancestor-frame-set/system-area-pointer))))
-
+(defvar *new* nil)
 (define-vop (xep-allocate-frame)
   (:info start-lab)
   (:generator 1
@@ -181,7 +181,8 @@
     (inst .skip (* (1- simple-fun-insts-offset) n-word-bytes))
     ;; The start of the actual code.
     ;; Save the return-pc.
-    (popw rbp-tn (frame-word-offset return-pc-save-offset))))
+    (unless *new*
+     (popw rbp-tn (frame-word-offset return-pc-save-offset)))))
 
 (defun emit-lea (target source disp)
   (if (eql disp 0)
@@ -390,12 +391,14 @@
         (unused-count-p (eq (tn-kind count) :unused)))
     (when (sb-kernel:values-type-may-be-single-value-p type)
       (inst jmp :c variable-values)
-      (cond ((location= start (first *register-arg-tns*))
+      (cond ((eq (tn-kind start) :unused)
+             (inst push (first *register-arg-tns*)))
+            ((location= start (first *register-arg-tns*))
              (inst push (first *register-arg-tns*))
              (inst lea start (ea n-word-bytes rsp-tn)))
             (t (inst mov start rsp-tn)
                (inst push (first *register-arg-tns*))))
-      (unless (eq (tn-kind count) :unused)
+      (unless unused-count-p
         (inst mov count (fixnumize 1)))
       (inst jmp done)
       (emit-label variable-values))
@@ -422,7 +425,8 @@
       for i downfrom -1
       for j below (sb-kernel:values-type-max-value-count type)
       do (storew arg args i))
-    (move start args)
+    (unless (eq (tn-kind start) :unused)
+     (move start args))
     (unless unused-count-p
       (move count nargs))
 
@@ -1112,47 +1116,45 @@
     ;; otherwise, we'd be accessing values below SP, and that's no good
     ;; if a signal interrupts this code sequence.  In that case, store
     ;; the final value in rsp after the stack-stack memmove loop.
-    (inst lea (if (<= fixed (sb-allocated-size 'stack))
-                  rsp-tn
-                  source)
-          (ea (* n-word-bytes (- (+ sp->fp-offset fixed) (sb-allocated-size 'stack)))
-              rbp-tn temp (ash 1 (- word-shift n-fixnum-tag-bits))))
+    (let* ((delta (- fixed (sb-allocated-size 'stack)))
+           (loop (gen-label))
+           (fixnum->word (ash 1 (- word-shift n-fixnum-tag-bits)))
+           (below (plusp delta)))
+      (inst lea (if below source rsp-tn)
+            (ea (* n-word-bytes (+ sp->fp-offset delta))
+                rbp-tn temp fixnum->word))
 
-    ;; Now: nargs>=1 && nargs>fixed
+      ;; Now: nargs>=1 && nargs>fixed
 
-    (cond ((< fixed register-arg-count)
-           ;; the code above only moves the final value of rsp in
-           ;; rsp directly if that condition is satisfied.  Currently,
-           ;; r-a-c is 3, so the aver is OK. If the calling convention
-           ;; ever changes, the logic above with LEA will have to be
-           ;; adjusted.
-           (aver (<= fixed (sb-allocated-size 'stack)))
-           ;; We must stop when we run out of stack args, not when we
-           ;; run out of more args.
-           ;; Number to copy = nargs-3
-           ;; Save the original count of args.
-           (inst mov rbx-tn rcx-tn)
-           (inst sub rbx-tn (fixnumize register-arg-count))
-           ;; Everything of interest in registers.
-           (inst jmp :be DO-REGS))
-          (t
-           ;; Number to copy = nargs-fixed
-           (inst lea rbx-tn (ea (- (fixnumize fixed)) rcx-tn))))
+      (cond ((< fixed register-arg-count)
+             ;; the code above only moves the final value of rsp in
+             ;; rsp directly if that condition is satisfied.  Currently,
+             ;; r-a-c is 3, so the aver is OK. If the calling convention
+             ;; ever changes, the logic above with LEA will have to be
+             ;; adjusted.
+             (aver (<= fixed (sb-allocated-size 'stack)))
+             ;; We must stop when we run out of stack args, not when we
+             ;; run out of more args.
+             ;; Number to copy = nargs-3
+             ;; Save the original count of args.
+             (inst mov rbx-tn rcx-tn)
+             (inst sub rbx-tn (fixnumize register-arg-count))
+             ;; Everything of interest in registers.
+             (inst jmp :be DO-REGS))
+            (t
+             ;; Number to copy = nargs-fixed
+             (inst lea rbx-tn (ea (- (fixnumize fixed)) rcx-tn))))
 
-    ;; Initialize R8 to be the end of args.
-    ;; Swap with SP if necessary to mirror the previous condition
-    (inst lea (if (<= fixed (sb-allocated-size 'stack))
-                  source
-                  rsp-tn)
-          (ea (* sp->fp-offset n-word-bytes)
-              rbp-tn temp (ash 1 (- word-shift n-fixnum-tag-bits))))
+      ;; Initialize R8 to be the end of args.
+      ;; Swap with SP if necessary to mirror the previous condition
+      (unless (zerop delta)
+        (inst lea (if below rsp-tn source)
+              (ea (* sp->fp-offset n-word-bytes)
+                  rbp-tn temp fixnum->word)))
 
-    ;; src: rbp + temp + sp->fp
-    ;; dst: rbp + temp + sp->fp + (fixed - [stack-size])
-    (let ((delta (- fixed (sb-allocated-size 'stack)))
-          (loop (gen-label))
-          (fixnum->word (ash 1 (- word-shift n-fixnum-tag-bits))))
-      (cond ((zerop delta)) ; no-op move
+      ;; src: rbp + temp + sp->fp
+      ;; dst: rbp + temp + sp->fp + (fixed - [stack-size])
+      (cond ((zerop delta))             ; no-op move
             ((minusp delta)
              ;; dst is lower than src, copy forward
              (zeroize copy-index)
@@ -1195,8 +1197,16 @@
           (return))
 
         ;; Don't deposit any more than there are.
-        (inst cmp :dword rcx-tn (fixnumize i))
-        (inst jmp :eq DONE)))
+        #.(assert (= register-arg-count 3))
+        (cond ((> fixed 0)
+               (inst cmp :dword rcx-tn (fixnumize i))
+               (inst jmp :eq DONE))
+              ;; Use a single comparison for 1 and 2
+              ((= i 1)
+               (inst cmp :dword rcx-tn (fixnumize 2))
+               (inst jmp :l DONE))
+              (t
+               (inst jmp :eq DONE)))))
 
     (inst jmp DONE)
 

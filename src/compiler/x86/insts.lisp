@@ -78,8 +78,7 @@
 
 (define-arg-type signed-imm-data
   :prefilter (lambda (dstate)
-               (let ((width (inst-operand-size dstate)))
-                 (read-signed-suffix (width-bits width) dstate))))
+               (read-signed-suffix (width-bits (inst-operand-size dstate)) dstate)))
 
 (define-arg-type imm-byte
   :prefilter (lambda (dstate)
@@ -230,7 +229,7 @@
                                      :include simple
                                      :default-printer '(:name
                                                         :tab accum ", " imm))
-  (imm :type 'imm-data))
+  (imm :type 'signed-imm-data))
 
 (define-instruction-format (reg-no-width 8 :default-printer '(:name :tab reg))
   (op    :field (byte 5 3))
@@ -291,7 +290,7 @@
                                         :default-printer
                                         '(:name :tab reg/mem ", " imm))
   (reg/mem :type 'sized-reg/mem)
-  (imm     :type 'imm-data))
+  (imm     :type 'signed-imm-data))
 
 ;;; Same as reg/mem, but with using the accumulator in the default printer
 (define-instruction-format
@@ -763,7 +762,7 @@
 
 (define-instruction mov (segment dst src &optional prefix)
   ;; immediate to register
-  (:printer reg ((op #b1011) (imm nil :type 'imm-data))
+  (:printer reg ((op #b1011) (imm nil :type 'signed-imm-data))
             '(:name :tab reg ", " imm))
   ;; absolute mem to/from accumulator
   (:printer simple-dir ((op #b101000) (imm nil :type 'imm-addr))
@@ -2519,29 +2518,6 @@
   ;; Each constant is ((size . bits) . label)
   (stable-sort constants #'> :key (lambda (x) (align-of (car x)))))
 
-(define-instruction .dword (segment &rest vals)
-  (:emitter
-   (dolist (val vals)
-     (cond ((label-p val)
-            ;; note a fixup prior to writing the backpatch so that the fixup's
-            ;; position is the location counter at the patch point
-            ;; (i.e. prior to skipping 8 bytes)
-            ;; This fixup is *not* recorded in code->fixups. Instead, trans_code()
-            ;; will fixup a counted initial subsequence of unboxed words.
-            (note-fixup segment :absolute (make-fixup nil :code-object 0))
-            (emit-back-patch
-             segment
-             4
-             (lambda (segment posn)
-               (declare (ignore posn)) ; don't care where the fixup itself is
-               (emit-dword segment
-                           (+ (component-header-length)
-                              (- (segment-header-skew segment))
-                              (- other-pointer-lowtag)
-                              (label-position val))))))
-           (t
-            (emit-dword segment val))))))
-
 (defun emit-inline-constant (section constant label)
   ;; See comment at CANONICALIZE-INLINE-CONSTANT about how we are
   ;; careless with the distinction between alignment and size.
@@ -2551,7 +2527,7 @@
           `(.align ,(integer-length (1- size)))
           label
           (if (eq (car constant) :jump-table)
-              `(.dword ,@(cdr constant))
+              `(.lispword ,@(coerce (cdr constant) 'list))
               `(.byte ,@(let ((val (cdr constant)))
                           (loop repeat size
                                 collect (prog1 (ldb (byte 8 0) val)
@@ -2585,8 +2561,8 @@
       byte word dword) ; unexplained phenomena
      t)))
 
-;; Replace the INST-INDEXth element in INST-BUFFER with an instruction
-;; to store a coverage mark in the OFFSETth byte beyond LABEL.
+;;; Replace the STATEMENT with an instruction to store a coverage mark
+;;; in the OFFSETth byte beyond LABEL.
 (defun sb-c::replace-coverage-instruction (statement label offset)
   (setf (stmt-mnemonic statement) 'mov
         (stmt-operands statement) `(,(make-ea :byte :disp `(+ ,label ,offset)) 1)))

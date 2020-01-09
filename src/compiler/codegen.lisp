@@ -100,9 +100,6 @@
            (block-home-lambda
             (block-next (component-head *component-being-compiled*))))
           (or (> speed compilation-speed) (> space compilation-speed))))
-(defun default-segment-inst-hook ()
-  (and *compiler-trace-output*
-       #'trace-instruction))
 
 ;;; Some platforms support unboxed constants immediately following the boxed
 ;;; code header. Such platform must implement supporting 4 functions:
@@ -128,7 +125,7 @@
 ;;; to get handles (as returned by sb-vm:inline-constant-value) from constant
 ;;; descriptors.
 ;;;
-#+(or x86 x86-64 arm64 ppc64)
+#+(or x86 x86-64 arm64 ppc ppc64)
 (defun register-inline-constant (&rest constant-descriptor)
   (declare (dynamic-extent constant-descriptor))
   (let ((asmstream *asmstream*)
@@ -140,7 +137,7 @@
        (vector-push-extend (cons constant label)
                            (asmstream-constant-vector asmstream))
        value))))
-#-(or x86 x86-64 arm64 ppc64)
+#-(or x86 x86-64 arm64 ppc ppc64)
 (progn (defun sb-vm:sort-inline-constants (constants) constants)
        (defun sb-vm:emit-inline-constant (&rest args)
          (error "EMIT-INLINE-CONSTANT called with ~S" args)))
@@ -150,7 +147,6 @@
   ;; Other backends will probably need relative jump tables instead
   ;; of absolute tables because of the problem of needing to load
   ;; the LIP register prior to loading an arbitrary PC.
-  #+(or x86 x86-64)
   (let* ((asmstream *asmstream*)
          (constants (asmstream-constant-vector asmstream))
          (section (asmstream-data-section asmstream))
@@ -266,6 +262,7 @@
 ;; Collect "static" count of number of times each vop is employed.
 ;; (as opposed to "dynamic" - how many times its code is hit at runtime)
 (defglobal *static-vop-usage-counts* nil)
+(defparameter *do-instcombine-pass* t)
 
 (defun generate-code (component)
   (when *compiler-trace-output*
@@ -304,7 +301,7 @@
                                  alignp)))
           (let ((env (block-physenv 1block)))
             (unless (eq env prev-env)
-              (let ((lab (gen-label)))
+              (let ((lab (gen-label "physenv elsewhere start")))
                 (setf (ir2-physenv-elsewhere-start (physenv-info env))
                       lab)
                 (emit (asmstream-elsewhere-section asmstream) lab))
@@ -330,6 +327,10 @@
                   (t
                    (funcall gen vop)))))))
 
+    (when *do-instcombine-pass*
+      #+x86-64
+      (sb-assem::combine-instructions (asmstream-code-section asmstream)))
+
     ;; Jump tables precede the coverage mark bytes to simplify locating
     ;; them in trans_code().
     (emit-jump-tables)
@@ -351,8 +352,7 @@
           (assemble-sections asmstream
                              simple-fun-labels
                              (make-segment :header-skew skew
-                                           :run-scheduler (default-segment-run-scheduler)
-                                           :inst-hook (default-segment-inst-hook)))
+                                           :run-scheduler (default-segment-run-scheduler)))
         (values segment text-length fun-table
                 (asmstream-elsewhere-label asmstream) fixup-notes)))))
 
@@ -381,32 +381,38 @@
         ;; vector of lists of original source paths covered
         (src-paths (make-array 10 :fill-pointer 0))
         (previous-mark))
-    (do ((statement (stmt-next (sb-assem::section-head (asmstream-code-section asmstream)))
+    (do ((statement (stmt-next (section-start (asmstream-code-section asmstream)))
                     (stmt-next statement)))
         ((null statement))
       (dolist (item (ensure-list (stmt-labels statement)))
         (when (label-usedp item) ; control can transfer to here
           (setq previous-mark nil)))
       (let ((mnemonic (stmt-mnemonic statement)))
-        (if (functionp mnemonic) ; this can do anything, who knows
-            (setq previous-mark nil)
-            (cond ((branch-opcode-p mnemonic) ; control flow kills mark combining
-                   (setq previous-mark nil))
-                  ((eq mnemonic '.coverage-mark)
-                   (let ((path (car (stmt-operands statement))))
-                     (cond ((not previous-mark) ; record a new path
-                            (let ((mark-index
-                                   (vector-push-extend (list path) src-paths)))
-                              ;; have the backend lower it into a real instruction
-                              (replace-coverage-instruction statement label mark-index))
+        (typecase mnemonic
+         (function ; this can do anything, who knows
+          (setq previous-mark nil))
+         (string) ; a comment can be ignored
+         (t
+          (cond ((branch-opcode-p mnemonic) ; control flow kills mark combining
+                 (setq previous-mark nil))
+                ((eq mnemonic '.coverage-mark)
+                 (let ((path (car (stmt-operands statement))))
+                   (cond ((not previous-mark) ; record a new path
+                          (let ((mark-index
+                                 (vector-push-extend (list path) src-paths)))
+                            ;; have the backend lower it into a real instruction
+                            (replace-coverage-instruction statement label mark-index))
                             (setq previous-mark statement))
                            (t ; record that the already-emitted mark pertains
                             ;; to an additional source path
                             (push path (elt src-paths (1- (fill-pointer src-paths))))
-                            (add-stmt-labels previous-mark (stmt-labels statement))
-                            (let ((predecessor (stmt-prev statement)))
-                              (delete-stmt statement)
-                              (setq statement predecessor))))))))))
+                            ;; Clobber this statement. Do not try to remove it and
+                            ;; combine its labels into the previous statement.
+                            ;; Doing that could move a label into an earlier IR2 block
+                            ;; which crashes when dumping locations.
+                            (setf (stmt-mnemonic statement) nil
+                                  (stmt-operands statement) nil))))))))))
+
     ;; Allocate space in the data section for coverage marks
     (let ((mark-index (length src-paths)))
       (when (plusp mark-index)

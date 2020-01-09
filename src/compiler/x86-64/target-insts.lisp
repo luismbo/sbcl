@@ -58,10 +58,17 @@
 (defun reg-imm-data (dchunk dstate) dchunk
   (aref (sb-disassem::dstate-filtered-values dstate) 4))
 
-(defstruct (machine-ea (:include sb-disassem::filtered-arg)
-                       (:copier nil)
+(defstruct (machine-ea (:copier nil)
                        (:constructor %make-machine-ea))
-  base disp index scale)
+  ;; possible TODO: base,index,scale could be packed thusly in 13 bits:
+  ;;  2 bits for scale
+  ;;  1 bit for base register non-NULL
+  ;;  4 bits for base register number
+  ;;  1 bit for base-register-is-RIP
+  ;;  1 bit for index register non-NULL
+  ;;  4 bits for index register number
+  disp base index scale)
+(declaim (freeze-type machine-ea))
 
 (defun reg-num (reg) (reg-id-num (reg-id reg)))
 
@@ -363,8 +370,15 @@
                     (symbol
                      (guess-symbol (lambda (s) (= (get-lisp-obj-address s) addr)))))
                (when symbol
+                 ;; Q: what's the difference between "tls_index:" and "tls:" (below)?
                  (note (lambda (stream) (format stream "tls_index: ~S" symbol))
                        dstate))))
+            ((and (not base-reg) (not index-reg) disp)
+             (let ((addr (+ disp ; guess that DISP points to a symbol-value slot
+                            (- (ash sb-vm:symbol-value-slot sb-vm:word-shift))
+                            sb-vm:other-pointer-lowtag)))
+               (awhen (guess-symbol (lambda (s) (= (get-lisp-obj-address s) addr)))
+                 (note (lambda (stream) (format stream "~A" it)) dstate))))
             ((and (eql base-reg #.(tn-offset sb-vm::thread-base-tn))
                   (not (dstate-getprop dstate +fs-segment+)) ; not system TLS
                   (not index-reg) ; no index
@@ -419,6 +433,7 @@
        ;; But ordinarily we get the string. Either way, the r/m arg reveals the
        ;; EA calculation. DCHUNK-ZERO is a meaningless value - any would do -
        ;; because the EA was computed in a prefilter.
+       ;; (the instruction format is known because LEA has exactly one format)
        (print-mem-ref :compute (regrm-inst-r/m dchunk-zero dstate)
                       width stream dstate)
        (setq addr value)

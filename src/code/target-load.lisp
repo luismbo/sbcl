@@ -70,14 +70,20 @@
         (if pathname
             (let* ((info (sb-c::make-file-source-info
                           pathname (stream-external-format stream)))
-                   (sb-c::*source-info* info))
+                   (sb-c::*source-info* info)
+                   (sb-c::*current-path* nil))
+              (locally (declare (optimize (sb-c::type-check 0)))
+                (setf sb-c::*current-path* (make-unbound-marker)))
               (setf (sb-c::source-info-stream info) stream)
               (sb-c::do-forms-from-info ((form current-index) info
                                          'sb-c::input-error-in-load)
                 (sb-c::with-source-paths
                   (sb-c::find-source-paths form current-index)
                   (eval-form form current-index))))
-            (let ((sb-c::*source-info* nil))
+            (let ((sb-c::*source-info* nil)
+                  (sb-c::*current-path* nil))
+              (locally (declare (optimize (sb-c::type-check 0)))
+                (setf sb-c::*current-path* (make-unbound-marker)))
               (loop for form =
                     (handler-case (read stream nil *eof-object*)
                       ((or reader-error end-of-file) (c)

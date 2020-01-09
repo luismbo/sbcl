@@ -1763,15 +1763,15 @@
 ;;; This is called by locall-analyze-fun-1 after it convers a call to
 ;;; FUN into a local call.
 ;;; Presumably, the function can be no longer reused by new calls to
-;;; FUN, so the whole thing has to be removed from *FREE-FUNS*
-(defun note-local-functional (fun)
+;;; FUN, so the whole thing has to be removed from (FREE-FUN *IR1-NAMESPACE*).
+(defun note-local-functional (fun &aux (free-funs (free-funs *ir1-namespace*)))
   (declare (type functional fun))
   (when (and (leaf-has-source-name-p fun)
              (eq (leaf-source-name fun) (functional-debug-name fun)))
     (let* ((name (leaf-source-name fun))
-           (defined-fun (gethash name *free-funs*)))
+           (defined-fun (gethash name free-funs)))
       (when (defined-fun-p defined-fun)
-        (remhash name *free-funs*)))))
+        (remhash name free-funs)))))
 
 ;;; Return functional for DEFINED-FUN which has been converted in policy
 ;;; corresponding to the current one, or NIL if no such functional exists.
@@ -1983,7 +1983,8 @@
          (setf (basic-var-sets var)
                (delete node (basic-var-sets var)))))
       (cast
-       (flush-dest (cast-value node)))))
+       (flush-dest (cast-value node)))
+      (no-op)))
 
   (remove-from-dfo block)
   (values))
@@ -2371,8 +2372,8 @@ is :ANY, the function name is not checked."
   (values))
 
 ;;; Return a LEAF which represents the specified constant object. If
-;;; the object is not in *CONSTANTS*, then we create a new constant
-;;; LEAF and enter it. If we are producing a fasl file, make sure that
+;;; the object is not in (CONSTANTS *IR1-NAMESPACE*), then we create a new
+;;; constant LEAF and enter it. If we are producing a fasl file, make sure that
 ;;; MAKE-LOAD-FORM gets used on any parts of the constant that it
 ;;; needs to be.
 ;;;
@@ -2456,11 +2457,11 @@ is :ANY, the function name is not checked."
       #-sb-xc-host
       (when (and (not faslp) (simple-string-p object))
         (logically-readonlyize object nil))
-      (let ((hashp (and (boundp '*constants*)
+      (let ((hashp (and (boundp '*ir1-namespace*)
                         (if faslp
                             (file-coalesce-p object)
                             (core-coalesce-p object)))))
-        (awhen (and hashp (gethash object *constants*))
+        (awhen (and hashp (gethash object (constants *ir1-namespace*)))
           (return-from find-constant it))
         (when (and faslp (not (sb-fasl:dumpable-layout-p object)))
           (if namep
@@ -2468,7 +2469,7 @@ is :ANY, the function name is not checked."
               (maybe-emit-make-load-forms object)))
         (let ((new (make-constant object)))
           (when hashp
-            (setf (gethash object *constants*) new))
+            (setf (gethash object (constants *ir1-namespace*)) new))
           new)))))
 
 ;;; Return true if X and Y are lvars whose only use is a
@@ -2997,7 +2998,7 @@ is :ANY, the function name is not checked."
 
 ;;; If the dest is a LET variable use the variable refs.
 (defun map-all-lvar-dests (lvar fun)
-  (let ((dest (principal-lvar-dest lvar)))
+  (multiple-value-bind (dest lvar) (principal-lvar-dest-and-lvar lvar)
     (if (and (combination-p dest)
              (eq (combination-kind dest) :local))
         (let ((var (lvar-lambda-var lvar)))
@@ -3212,11 +3213,18 @@ is :ANY, the function name is not checked."
     t))
 
 (defun process-lvar-type-annotation (lvar annotation)
-  (let ((type (lvar-type-annotation-type annotation))
-        (uses (lvar-uses lvar))
-        (condition (if (eq (lvar-type-annotation-context annotation) :initform)
-                       'sb-int:type-style-warning
+  (let* ((uses (lvar-uses lvar))
+         (condition (case (lvar-type-annotation-context annotation)
+                      (:initform
+                       (if (policy (if (consp uses)
+                                       (car uses)
+                                       uses)
+                               (zerop type-check))
+                           'slot-initform-type-style-warning
+                           (return-from process-lvar-type-annotation)))
+                      (t
                        'sb-int:type-warning)))
+         (type (lvar-type-annotation-type annotation)))
     (cond ((not (types-equal-or-intersect (lvar-type lvar) type))
            (%compile-time-type-error-warn annotation (type-specifier type)
                                           (type-specifier (lvar-type lvar))

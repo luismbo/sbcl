@@ -38,7 +38,7 @@
 ;;; Check everything that we can think of for consistency. When a
 ;;; definite inconsistency is detected, we BARF.
 ;;; Our argument is a list of components, but
-;;; we also look at the *FREE-VARS*, *FREE-FUNS* and *CONSTANTS*.
+;;; we also look at the *IR1-NAMESPACE*.
 ;;;
 ;;; First we do a pre-pass which finds all the CBLOCKs and CLAMBDAs,
 ;;; testing that they are linked together properly and entering them
@@ -46,7 +46,7 @@
 ;;; the actual code and control flow. Finally, we scan the global leaf
 ;;; hashtables, looking for lossage.
 (declaim (ftype (function (list) (values)) check-ir1-consistency))
-(defun check-ir1-consistency (components)
+(defun check-ir1-consistency (components &aux (ns *ir1-namespace*))
   (let ((*seen-blocks* (make-hash-table :test 'eq))
         (*seen-funs* (make-hash-table :test 'eq)))
     (unwind-protect
@@ -69,16 +69,15 @@
                  (unless (or (eq block tail)
                              (eq (block-component block) c))
                    (barf "~S is not in ~S." block c)))
-               #|
-               (when (or (loop-blocks c) (loop-inferiors c))
-               (do-blocks (block c :both)
-               (setf (block-flag block) nil))
-               (check-loop-consistency c nil)
-               (do-blocks (block c :both)
-               (unless (block-flag block)
-               (barf "~S was not in any loop." block))))
-               |#
-               ))
+               (let ((component-outer-loop (component-outer-loop c)))
+                 (when (or (loop-blocks component-outer-loop)
+                           (loop-inferiors component-outer-loop))
+                   (do-blocks (block c :both)
+                     (setf (block-flag block) nil))
+                   (check-loop-consistency component-outer-loop nil)
+                   (do-blocks (block c :both)
+                     (unless (block-flag block)
+                       (barf "~S was not in any loop." block)))))))
            (check-fun-consistency components)
 
            (dolist (c components)
@@ -93,32 +92,32 @@
                                   (and (global-var-p v)
                                        (member (global-var-kind v)
                                                '(:global :special :unknown))))
-                        (barf "strange *FREE-VARS* entry: ~S" v))
+                        (barf "strange FREE-VARS entry: ~S" v))
                       (when (leaf-p v)
                         (dolist (n (leaf-refs v))
                           (check-node-reached n)))
                       (when (basic-var-p v)
                         (dolist (n (basic-var-sets v))
                           (check-node-reached n))))
-                    *free-vars*)
+                    (free-vars ns))
 
            (maphash (lambda (k v)
                       (declare (ignore k))
                       (unless (constant-p v)
-                        (barf "strange *CONSTANTS* entry: ~S" v))
+                        (barf "strange CONSTANTS entry: ~S" v))
                       (dolist (n (leaf-refs v))
                         (check-node-reached n)))
-                    *constants*)
+                    (constants ns))
 
            (maphash (lambda (k v)
                       (declare (ignore k))
                       (unless (or (functional-p v)
                                   (and (global-var-p v)
                                        (eq (global-var-kind v) :global-function)))
-                        (barf "strange *FREE-FUNS* entry: ~S" v))
+                        (barf "strange FREE-FUNS entry: ~S" v))
                       (dolist (n (leaf-refs v))
                         (check-node-reached n)))
-                    *free-funs*))
+                    (free-funs ns)))
       (clrhash *seen-blocks*)
       (clrhash *seen-funs*))
     (values)))
@@ -244,12 +243,11 @@
 
 ;;;; loop consistency checking
 
-#|
 ;;; Descend through the loop nesting and check that the tree is well-formed
 ;;; and that all blocks in the loops are known blocks. We also mark each block
 ;;; that we see so that we can do a check later to detect blocks that weren't
 ;;; in any loop.
-(declaim (ftype (function (loop (or loop null)) (values)) check-loop-consistency))
+(declaim (ftype (function (cloop (or cloop null)) (values)) check-loop-consistency))
 (defun check-loop-consistency (loop superior)
   (unless (eq (loop-superior loop) superior)
     (barf "wrong superior in ~S, should be ~S" loop superior))
@@ -278,7 +276,7 @@
   (values))
 
 ;;; Check that Block is either in Loop or an inferior.
-(declaim (ftype (function (block loop) (values)) check-loop-block))
+(declaim (ftype (function (cblock cloop) (values)) check-loop-block))
 (defun check-loop-block (block loop)
   (unless (gethash block *seen-blocks*)
     (barf "unseen block ~S in loop info for ~S" block loop))
@@ -290,8 +288,6 @@
     (unless (walk loop)
       (barf "~S is in loop info for ~S but not in the loop." block loop)))
   (values))
-
-|#
 
 ;;; Check a block for consistency at the general flow-graph level, and
 ;;; call CHECK-NODE-CONSISTENCY on each node to locally check for
@@ -844,30 +840,77 @@
 
 ;;;; data structure dumping routines
 
+;;; IR2 blocks don't get a convenient number until LIFETIME-ANALYZE which is
+;;; too late when trying to talk about an ir2 block during IR2-OPTIMIZE.
+;;; So instead of accessing them by the block-number, use an opaque ID.
+;;; And avoid confusion with all the other opaque IDs flying around
+;;; by using alphabetics instead.
+;;; Generate this numbering sequence for up to 5 alphabetic "digits":
+;;; A..Z, AA,AB ... AZ, BA ... BZ, ZA .. ZZ, AAA, AAB ...
+(defun id->string (id)
+  (declare (type (integer 1 *) id))
+  (flet ((n-digit-string (n-digits val)
+           (let ((str (make-string n-digits :element-type 'base-char)))
+             (loop for i downfrom (1- n-digits) to 0
+                   do (multiple-value-bind (quo rem) (floor val 26)
+                        (setf (aref str i) (code-char (+ (char-code #\A) rem))
+                              val quo)))
+             str)))
+    (do ((min 0) (n-digits 1 (1+ n-digits)))
+        (nil)
+      (let ((span (expt 26 n-digits)))
+        (when (<= id (+ min span))
+          (return (n-digit-string n-digits (- id (1+ min)))))
+        (incf min span)))))
+;;; Invert the above mapping
+(defun string->id (string)
+  (let ((val 0))
+    (dotimes (i (length string))
+      (setq val (+ (* val 26) (- (char-code (char string i)) (char-code #\A)))))
+    (dotimes (i (1- (length string)))
+      (incf val (expt 26 (1+ i))))
+    (1+ val)))
+
+(eval-when (#+sb-xc :compile-toplevel)
+  (loop for i from 1 to 1000 ; sanity check the stringifying algorithm
+        do (assert (= (string->id (id->string i)) i))))
+
 ;;; When we print CONTINUATIONs and TNs, we assign them small numeric
 ;;; IDs so that we can get a handle on anonymous objects given a
 ;;; printout.
-(macrolet ((def (array-getter fto ffrom) ; "to" = to number/id, resp. "from"
-             `(progn
-                (defun ,fto (x)
-                  (let* ((map *compilation*)
-                         (ht (objmap-obj-to-id map)))
-                    (or (values (gethash x ht))
-                        (let ((array (,array-getter map))
-                              (num (incf (,(symbolicate "OBJMAP-" fto) map))))
-                          (when (>= num (length array))
-                            (let ((new (adjust-array array (* (length array) 2))))
-                              (fill array nil)
-                              (setf array new (,array-getter map) array)))
-                          (setf (svref array num) x)
-                          (setf (gethash x ht) num)))))
-
-                (defun ,ffrom (num)
-                  (let ((array (,array-getter *compilation*)))
-                    (and (< num (length array)) (svref array num)))))))
-  (def objmap-id-to-cont cont-num num-cont)
-  (def objmap-id-to-tn tn-id id-tn)
-  (def objmap-id-to-label label-id id-label))
+(macrolet ((def (array-getter fto ffrom type) ; "to" = to number/id, resp. "from"
+             (let ((xform (if (eq array-getter 'objmap-id-to-ir2block)
+                              'id->string
+                              'identity)))
+               `(progn
+                  (export '(,fto ,ffrom))
+                  (defun ,fto (x)
+                    (declare (type ,type x))
+                    (let* ((map *compilation*)
+                           (ht (objmap-obj-to-id map)))
+                      (or (gethash x ht)
+                          (let ((array (,array-getter map)))
+                            (when (null array)
+                              (setf array (make-array 20 :fill-pointer 0
+                                                      :adjustable t)
+                                    (,array-getter map) array))
+                            (setf (gethash x ht)
+                                  (,xform (1+ (vector-push-extend x array))))))))
+                  (defun ,ffrom (num)
+                    (let ((array (,array-getter *compilation*)))
+                      ,@(when (eq array-getter 'objmap-id-to-ir2block)
+                          '((setq num (string->id num))))
+                      ;; numbers start from 1, not 0
+                      (and (< (1- num) (length array)) (aref array (1- num)))))))))
+  (def objmap-id-to-node node-id id-node node)
+  (def objmap-id-to-comp component-id id-component component)
+  (def objmap-id-to-leaf leaf-id id-leaf leaf)
+  (def objmap-id-to-cont %cont-num num-cont (or ctran lvar))
+  (def objmap-id-to-ir2block ir2-block-id id-ir2-block ir2-block)
+  (def objmap-id-to-tn tn-id id-tn tn)
+  (def objmap-id-to-label label-id id-label label))
+;; Do not give NIL a continuation number
+(defun cont-num (x) (if x (%cont-num x)))
 
 ;;; Print a terse one-line description of LEAF.
 (defun print-leaf (leaf &optional (stream *standard-output*))
@@ -901,7 +944,7 @@
     (integer (ctran-block (num-cont thing)))
     (functional (lambda-block (main-entry thing)))
     (null (error "Bad thing: ~S." thing))
-    (symbol (block-or-lose (gethash thing *free-funs*)))))
+    (symbol (block-or-lose (gethash thing (free-funs *ir1-namespace*))))))
 
 ;;; Print cN.
 (defun print-ctran (cont)
@@ -923,7 +966,7 @@
 (defun print-nodes (block)
   (setq block (block-or-lose block))
   (pprint-logical-block (nil nil)
-    (format t "~:@_IR1 block ~D start c~D"
+    (format t "~:@_IR1 block ~D~@[ start c~D~]"
             (block-number block) (cont-num (block-start block)))
     (when (block-delete-p block)
       (format t " <deleted>"))
@@ -1002,7 +1045,9 @@
              (format t "cast v~D ~A[~S -> ~S]" (cont-num value)
                      (if (cast-%type-check node) #\+ #\-)
                      (cast-type-to-check node)
-                     (cast-asserted-type node)))))
+                     (cast-asserted-type node))))
+          (no-op
+           (princ "no-op")))
         (pprint-newline :mandatory)))
 
     (awhen (block-info block)
@@ -1063,8 +1108,17 @@
         (princ (vop-codegen-info vop)))
        (t
         (princ (with-simple-output-to-string (stream)
-                 (let ((*print-level* 1)
-                       (*print-length* 3))
+                 ;; Current print depth varies based on whether PRINT-VOP
+                 ;; is called by DESCRIBE-IR2-COMPONENT or TRACE-INSTRUCTION,
+                 ;; so any fixed value of *PRINT-LEVEL* changes its effect
+                 ;; depending on the call context. Resetting depth to 0 seems
+                 ;; like the best way to get consistent output.
+                 ;; We shouldn't bind the printer limits to NIL, because
+                 ;; hairy internal objects such as PHYSENV can be printed.
+                 ;; See also the comment above FUNCALL-WITH-DEBUG-IO-SYNTAX.
+                 (let (#-sb-xc-host (*current-level-in-print* 0)
+                       (*print-level* 2)
+                       (*print-length* 15))
                    (format stream "{~{~S~^ ~}} " (vop-codegen-info vop)))))))
       (pprint-newline :linear))
     (when (vop-results vop)
@@ -1078,9 +1132,15 @@
   (pprint-logical-block (*standard-output* nil)
     (cond
       ((eq (block-info (ir2-block-block block)) block)
-       (format t "~:@_IR2 block ~D start c~D~:@_"
+       (format t "~:@_IR2 block ~A~@[(#~d)~]~@[ start c~D~]~:@_"
+               (ir2-block-id block)
                (ir2-block-number block)
                (cont-num (block-start (ir2-block-block block))))
+       (when (boundp '*2block-info*)
+         (let ((info (gethash block *2block-info*)))
+           (format t "pred=~:A succ=~:A~:@_"
+                   (mapcar #'ir2-block-id (car info))
+                   (mapcar #'ir2-block-id (cdr info)))))
        (let ((label (ir2-block-%label block)))
          (when label
            (format t "L~D:~:@_" (label-id label)))))
@@ -1115,7 +1175,7 @@
          do (pprint-logical-block (*standard-output* nil)
               (if full
                   (print-nodes block)
-                  (format t "IR1 block ~D start c~D"
+                  (format t "IR1 block ~D~@[ start c~D~]"
                           (block-number block)
                           (cont-num (block-start block))))
               (pprint-indent :block 4)

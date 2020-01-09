@@ -435,7 +435,7 @@
       (unless (and (typep form '(cons (member list vector)))
                    (do ((items (cdr form))
                         (length 0 (1+ length))
-                        (fun (let ((axis (the (mod #.array-rank-limit) (1+ axis))))
+                        (fun (let ((axis (the (mod #.sb-xc:array-rank-limit) (1+ axis))))
                                (if (= axis rank)
                                    (lambda (item) (push item output))
                                    (lambda (item) (recurse item axis))))))
@@ -1874,3 +1874,8 @@
     ((array) node gen)
   (declare (ignore gen))
   (values array (specifier-type '(and array (not (simple-array * (*)))))))
+
+(defoptimizer (%array-fill-pointer-p constraint-propagate-if)
+    ((array) node gen)
+  (declare (ignore gen))
+  (values array (specifier-type '(and vector (not simple-array)))))

@@ -27,6 +27,8 @@
   (declare (ignore table))
   `(progn ,@body))
 
+(defmacro define-thread-local (&rest rest) `(defvar ,@rest))
+
 (defmacro defglobal (name value &rest doc)
   `(eval-when (:compile-toplevel :load-toplevel :execute)
      (defparameter ,name
@@ -105,6 +107,12 @@
   (when (typep object 'array)
     (assert (not (eq (array-element-type object) nil))))
   nil)
+
+(defun data-vector-ref-with-offset (array index offset)
+  (svref array (+ index offset)))
+
+(defun data-vector-ref (array index)
+  (svref array index))
 
 (defun %negate (number)
   (sb-xc:- number))

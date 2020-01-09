@@ -51,13 +51,16 @@
              (eq (sb-int:info :function :where-from s) :assumed))
       (error "INLINE declaration for an undefined function: ~S?" s)))
 
-;; enable this too see which vops were or weren't used
-#+nil
-(when (hash-table-p sb-c::*static-vop-usage-counts*)
-  (format t "Vops used:~%")
-  (dolist (cell (sort (sb-int:%hash-table-alist sb-c::*static-vop-usage-counts*)
-                      #'> :key #'cdr))
-    (format t "~6d ~s~%" (cdr cell) (car cell))))
+(with-open-file (output "output/cold-vop-usage.txt"
+                        :direction :output :if-exists :supersede)
+  (sb-int:dohash ((name vop) sb-c::*backend-parsed-vops*)
+    (declare (ignore vop))
+    (format output "~7d ~s~%"
+            (gethash name sb-c::*static-vop-usage-counts* 0)
+            ;; change SB-XC symbols back to their normal counterpart
+            (if (string= (cl:package-name (cl:symbol-package name)) "SB-XC")
+                (find-symbol (string name) "COMMON-LISP")
+                name))))
 
 (when sb-c::*track-full-called-fnames*
   (let (possibly-suspicious likely-suspicious)
@@ -152,8 +155,8 @@ Sample output
 ;;; time to run it. The resulting core isn't used in the normal build,
 ;;; but can be handy for experimenting with the system. (See slam.sh
 ;;; for an example.)
-#+sb-after-xc-core
-(progn
+;;; FIXME: can we just always do this for supported hosts, and remove the choice?
+(when (member :sb-after-xc-core sb-xc:*features*)
   #+cmu (ext:save-lisp "output/after-xc.core" :load-init-file nil)
   #+sbcl (host-sb-ext:save-lisp-and-die "output/after-xc.core")
   #+openmcl (ccl::save-application "output/after-xc.core")

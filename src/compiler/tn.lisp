@@ -216,10 +216,11 @@
 ;;; Create a constant TN. The backend dependent
 ;;; IMMEDIATE-CONSTANT-SC function is used to determine whether the
 ;;; constant has an immediate representation.
-(defun make-constant-tn (constant)
+(defun make-constant-tn (constant &optional force-boxed)
   (declare (type constant constant))
   (or (leaf-info constant)
-      (multiple-value-bind (immed null-offset) (immediate-constant-sc (constant-value constant))
+      (multiple-value-bind (immed null-offset)
+          (immediate-constant-sc (constant-value constant))
         (if null-offset
             (setf (leaf-info constant)
                   (component-live-tn
@@ -229,13 +230,16 @@
             (let* ((boxed (or (not immed)
                               (boxed-immediate-sc-p immed)))
                    (component (component-info *component-being-compiled*))
-                   ;; If a constant have either an immediate or boxed
+                   ;; If a constant has either an immediate or boxed
                    ;; representation (e.g. double-float) postpone the SC
                    ;; choice until SELECT-REPRESENTATIONS.
-                   (sc (and boxed
-                            (if immed
-                                (svref *backend-sc-numbers* immed)
-                                (sc-or-lose 'constant))))
+                   (sc (cond (boxed
+                              (if immed
+                                  (svref *backend-sc-numbers* immed)
+                                  (sc-or-lose 'constant)))
+                             (force-boxed
+                              (setf immed nil)
+                              (sc-or-lose 'constant))))
                    (res (make-tn 0 :constant (primitive-type (leaf-type constant)) sc)))
               ;; Objects of type SYMBOL can be immediate but they still go in the constants
               ;; because liveness depends on pointer tracing without looking at code-fixups.
@@ -298,9 +302,9 @@
       (let ((entry (aref constants i)))
         (when (and (consp entry)
                    (eq (car entry) kind)
-                   (or (eq (cdr entry) info)
+                   (or (eq (cadr entry) info)
                        (and (consp info)
-                            (equal (cdr entry) info))))
+                            (equal (cadr entry) info))))
           (setf (tn-offset res) i)
           (return))))
 
@@ -404,12 +408,12 @@
   (declare (type cblock block))
   (let ((2block (block-info block)))
     (or (ir2-block-%label 2block)
-        (setf (ir2-block-%label 2block) (gen-label)))))
+        (setf (ir2-block-%label 2block) (gen-label "basic block")))))
 (defun block-trampoline (block)
   (declare (type cblock block))
   (let ((2block (block-info block)))
     (or (ir2-block-%trampoline-label 2block)
-        (setf (ir2-block-%trampoline-label 2block) (gen-label)))))
+        (setf (ir2-block-%trampoline-label 2block) (gen-label "trampoline")))))
 
 ;;; Return true if Block is emitted immediately after the block ended by Node.
 (defun drop-thru-p (node block)
@@ -467,7 +471,7 @@
         (setf (vop-prev next) prev)
         (setf (ir2-block-last-vop block) prev)))
 
-  (values))
+  nil)
 
 ;;; Return a list of N normal TNs of the specified primitive type.
 (defun make-n-tns (n ptype)

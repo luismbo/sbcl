@@ -395,9 +395,9 @@
         `(progn
            (defun ,name (,lambda-list)
              ,@body)
-           ,@(loop for what in (ensure-list (second what))
+           ,@(loop for vop-name in (ensure-list (second what))
                    collect
-                   `(setf (vop-info-optimizer (template-or-lose ',what))
+                   `(setf (vop-info-optimizer (template-or-lose ',vop-name))
                           #',name)))
         (binding* (((forms decls) (parse-body body nil))
                    ((var-decls more-decls) (extract-var-decls decls vars))
@@ -602,16 +602,9 @@
         (clrhash ,source-paths)))))
 
 ;;; Bind the hashtables used for keeping track of global variables,
-;;; functions, etc. Also establish condition handlers.
+;;; functions, etc.
 (defmacro with-ir1-namespace (&body forms)
-  `(let ((*free-vars* (make-hash-table :test 'eq))
-         (*free-funs* (make-hash-table :test 'equal))
-         (*constants* (make-hash-table :test 'equal)))
-     (unwind-protect
-          (progn ,@forms)
-       (clrhash *free-funs*)
-       (clrhash *free-vars*)
-       (clrhash *constants*))))
+  `(let ((*ir1-namespace* (make-ir1-namespace))) ,@forms))
 
 ;;; Look up NAME in the lexical environment namespace designated by
 ;;; SLOT, returning the <value, T>, or <NIL, NIL> if no entry. The
@@ -659,6 +652,7 @@
   ;; If true, a function that gets called with the node that the event
   ;; happened to.
   (action nil :type (or function null)))
+(declaim (freeze-type event-info))
 
 ;;; A hashtable from event names to event-info structures.
 (define-load-time-global *event-info* (make-hash-table :test 'eq))

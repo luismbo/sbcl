@@ -285,7 +285,7 @@
                  ((or (eql s 'e) (eql s 'f) (eql s '|a|)) nil :bar))
                '(a b c d e f |a|)
                nil
-               'wonky-hash)))))
+               'wonky-hash 1)))))
     (loop for (expect . inputs) in tests
           do (dolist (input inputs)
                (assert (eql (funcall fun input) expect)))))
@@ -300,7 +300,7 @@
                  ((or (eql s 'b) (eql s 'a) (eql s '|d|)) nil :bar))
                '(a b c d e f |d|)
                nil
-               'wonky-hash)))))
+               'wonky-hash 1)))))
     (loop for (expect . inputs) in tests
           do (dolist (input inputs)
                (assert (eql (funcall fun input) expect))))))
@@ -350,3 +350,52 @@
             '(lambda (x)
               (case x ((a b c) 1) ((d e f) 2) (t #*10101))))))
     (assert (equal (funcall f 30) #*10101))))
+
+(with-test (:name :memq-as-case)
+  (let* ((f (checked-compile
+             '(lambda (x)
+               (if (sb-int:memq x '(a b c d e f g h i j k l m n o p)) 1 2))))
+         (code (sb-kernel:fun-code-header f))
+         (constant
+           (sb-kernel:code-header-ref
+            code
+            (+ sb-vm:code-constants-offset sb-vm:code-slots-per-simple-fun))))
+    ;; should have a vector of symbols, not references to each symbol
+    (assert (vectorp constant))
+    (assert (eql (funcall f 'j) 1))
+    (assert (eql (funcall f 42) 2)))
+
+  (let* ((f (checked-compile
+             '(lambda (x)
+               (or (member x '(a b c d e f g h i j k nil t l m n o p) :test 'eq)
+                   -1))))
+         (code (sb-kernel:fun-code-header f))
+         (constant1
+           (sb-kernel:code-header-ref
+            code
+            (+ sb-vm:code-constants-offset sb-vm:code-slots-per-simple-fun)))
+         (constant2
+           (sb-kernel:code-header-ref
+            code
+            (+ (1+ sb-vm:code-constants-offset) sb-vm:code-slots-per-simple-fun))))
+    ;; These accesses are safe because if the transform happened,
+    ;; there should be 2 constants, and if it didn't, then at least 2 constants.
+    (assert (and (vectorp constant1) (vectorp constant2)))
+    (assert (equal (funcall f 'o) '(o p)))
+    (assert (eql (funcall f 42) -1))))
+
+;;; There was a minor glitch in the typecase->case optimizer causing
+;;; duplicate layouts to appear, but the correct clause was picked
+;;; by good fortune. Assert that there are no duplicates now.
+(with-test (:name :sealed-struct-typecase-map)
+  (let (all-layouts)
+    (sb-int:dovector (bin (subseq (sb-impl::build-sealed-struct-typecase-map
+                                   '((sb-kernel:ansi-stream synonym-stream
+                                      sb-sys:fd-stream broadcast-stream
+                                      two-way-stream concatenated-stream echo-stream)
+                                     (broadcast-stream)))
+                                  1))
+      (dolist (cell bin)
+        (let ((layout (car cell)))
+          (assert (not (member layout all-layouts)))
+          (push layout all-layouts))))))

@@ -716,7 +716,8 @@
   ;; encodes the source ref (shifted 8, it is also encoded in
   ;; MAX-VOP-TN-REFS) and the dest ref index.
   (targets nil :type (or null (simple-array (unsigned-byte 16) 1)))
-  (optimizer nil :type (or null function)))
+  (optimizer nil :type (or null function))
+  move-vop-p)
 
 ;; These printers follow the definition of VOP-INFO because they
 ;; want to inline VOP-INFO-NAME, and it's less code to move them here
@@ -731,6 +732,10 @@
   write-p
   (vop :test vop :prin1 (vop-info-name (vop-info vop))))
 
+(declaim (inline vop-name))
+(defun vop-name (vop)
+  (declare (type vop vop))
+  (vop-info-name (vop-info vop)))
 
 ;;;; SBs and SCs
 

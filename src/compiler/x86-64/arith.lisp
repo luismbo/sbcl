@@ -25,58 +25,70 @@
   (:policy :fast-safe))
 
 (define-vop (fixnum-unop fast-safe-arith-op)
-  (:args (x :scs (any-reg) :target res))
-  (:results (res :scs (any-reg)))
+  (:args (x :scs (any-reg control-stack) :target res :load-if nil))
+  (:results (res :scs (any-reg control-stack) :load-if nil))
   (:note "inline fixnum arithmetic")
   (:arg-types tagged-num)
   (:result-types tagged-num))
 
 (define-vop (signed-unop fast-safe-arith-op)
-  (:args (x :scs (signed-reg) :target res))
-  (:results (res :scs (signed-reg)))
+  (:args (x :scs (signed-reg signed-stack) :target res :load-if nil))
+  (:results (res :scs (signed-reg signed-stack) :load-if nil))
   (:note "inline (signed-byte 64) arithmetic")
   (:arg-types signed-num)
   (:result-types signed-num))
 
+;;; logical or arithmetic negation
+(defun emit-inline-neg (op arg result vop &optional fixnump)
+  (declare (ignore vop))
+  ;; If ARG and RESULT are the same location, then the initial and final MOVEs
+  ;; are both no-ops. If different locations and not both memory,
+  ;; then the initial move is a physical move and the final is a no-op.
+  ;; If both are stack locations, then compute the answer in temp-reg-tn.
+  ;; (REG might be a stack location, not necessarily a GPR in this emitter.
+  ;; It's just a naming convention that is consistent with other emitters)
+  (let ((reg (if (or (alias-p arg result) (gpr-tn-p arg) (gpr-tn-p result))
+                 result
+                 temp-reg-tn)))
+    (move reg arg)
+    (case op
+      (not (if fixnump (inst xor reg (fixnumize -1)) (inst not reg)))
+      (neg (inst neg reg)))
+    (move result reg)))
+
 (define-vop (fast-negate/fixnum fixnum-unop)
   (:translate %negate)
-  (:generator 1
-    (move res x)
-    (inst neg res)))
+  (:vop-var vop)
+  (:generator 1 (emit-inline-neg 'neg x res vop)))
 
 (define-vop (fast-negate/signed signed-unop)
   (:translate %negate)
-  (:generator 2
-    (move res x)
-    (inst neg res)))
+  (:vop-var vop)
+  (:generator 2 (emit-inline-neg 'neg x res vop)))
 
 (define-vop (fast-negate/unsigned signed-unop)
-  (:args (x :scs (unsigned-reg) :target res))
+  (:args (x :scs (unsigned-reg unsigned-stack) :target res :load-if nil))
   (:arg-types unsigned-num)
   (:translate %negate)
-  (:generator 3
-    (move res x)
-    (inst neg res)))
+  (:vop-var vop)
+  (:generator 3 (emit-inline-neg 'neg x res vop)))
 
 (define-vop (fast-negate/signed-unsigned signed-unop)
-  (:results (res :scs (unsigned-reg)))
+  (:results (res :scs (unsigned-reg unsigned-stack) :load-if nil))
   (:result-types unsigned-num)
   (:translate %negate)
-  (:generator 3
-    (move res x)
-    (inst neg res)))
+  (:vop-var vop)
+  (:generator 3 (emit-inline-neg 'neg x res vop)))
 
 (define-vop (fast-lognot/fixnum fixnum-unop)
   (:translate lognot)
-  (:generator 1
-    (move res x)
-    (inst xor res (fixnumize -1))))
+  (:vop-var vop)
+  (:generator 1 (emit-inline-neg 'not x res vop t)))
 
 (define-vop (fast-lognot/signed signed-unop)
   (:translate lognot)
-  (:generator 2
-    (move res x)
-    (inst not res)))
+  (:vop-var vop)
+  (:generator 2 (emit-inline-neg 'not x res vop nil)))
 
 ;;;; binary fixnum operations
 
@@ -197,22 +209,6 @@
                    ,@(or c/unsigned=>unsigned
                          `((move r x) (inst ,op r (constantize y)))))))))
 
-  ;; It doesn't work as desired to pass forms to DEFINE-BINOP if such forms would
-  ;; invoke a helper function or macro, since - thanks to the vop inheritance mechanism -
-  ;; any enclosing lexical context is discarded. You can, however, wrap stuff around the
-  ;; DEFINE-BINOP, hence this somewhat strange "(let ((emit)))" idiom.
-  (macrolet ((define-subtract ()
-               (let ((emit '(cond ((and (not (location= r x)) (typep (- y) '(signed-byte 32)))
-                                   (inst lea r (ea (- y) x)))
-                                  (t
-                                   (move r x)
-                                   (inst sub r (constantize y))))))
-                 `(define-binop - 4 sub
-                    :c/fixnum=>fixnum ((let ((y (fixnumize y))) ,emit))
-                    :c/signed=>signed (,emit)
-                    :c/unsigned=>unsigned (,emit)))))
-    (define-subtract))
-
   ;; The following have microoptimizations for some special cases
   ;; not caught by the front end.
 
@@ -285,72 +281,170 @@
     (move r x)
     (inst or r y)))
 
-;;; Special handling of add on the x86; can use lea to avoid a
-;;; register load, otherwise it uses add.
-;;; FIXME: either inherit from fast-foo-binop or explain why not.
-(define-vop (fast-+/fixnum=>fixnum fast-safe-arith-op)
-  (:translate +)
-  (:args (x :scs (any-reg) :target r
-            :load-if (not (and (sc-is x control-stack)
-                               (sc-is y any-reg)
-                               (sc-is r control-stack)
-                               (location= x r))))
-         (y :scs (any-reg control-stack)))
-  (:arg-types tagged-num tagged-num)
-  (:results (r :scs (any-reg) :from (:argument 0)
-               :load-if (not (and (sc-is x control-stack)
-                                  (sc-is y any-reg)
-                                  (sc-is r control-stack)
-                                  (location= x r)))))
-  (:result-types tagged-num)
-  (:note "inline fixnum arithmetic")
-  (:generator 2
-    (cond ((and (sc-is x any-reg) (sc-is y any-reg) (sc-is r any-reg)
-                (not (location= x r)))
-           (inst lea r (ea x y)))
-          (t
-           (move r x)
-           (inst add r y)))))
+(defun prepare-alu-operands (op x y vop const-tn-xform commutative)
+  (declare (ignore op))
+  (let ((arg (sb-c::vop-args vop)))
+    (when (tn-ref-load-tn arg)
+      (bug "Shouldn't have a load TN for arg0"))
+    (let ((arg (tn-ref-across arg)))
+      (when (and arg (tn-ref-load-tn arg))
+        (bug "Shouldn't have a load TN for arg1"))))
+  (let ((res (sb-c::vop-results vop)))
+    (when (tn-ref-load-tn res) (bug "Shouldn't have a load TN for result")))
+  ;; Immediates won't be loaded since the :LOAD-IF expression is NIL.
+  ;; Such value should always be placed into Y if the operation is +.
+  ;; And note that because we're forgoing the automatic arg loading,
+  ;; any fixnum scaling that would have happened automatically won't.
+  (when (and (tn-p x) (sc-is x immediate))
+    (setq x (funcall const-tn-xform (tn-value x))))
+  (when (and (tn-p y) (sc-is y immediate))
+    (setq y (funcall const-tn-xform (tn-value y))))
+  (when (and commutative (integerp x))
+    (rotatef x y)) ; weird! why did IR1 not flip the args?
+  (values x y))
 
-(define-vop (fast-+-c/fixnum=>fixnum fast-safe-arith-op)
-  (:translate +)
-  (:args (x :target r :scs (any-reg) :load-if t))
-  (:info y)
-  (:arg-types tagged-num (:constant fixnum))
-  (:results (r :scs (any-reg) :load-if t))
-  (:result-types tagged-num)
-  (:note "inline fixnum arithmetic")
-  (:generator 1
-    (let ((y (fixnumize y)))
-      (cond ((and (not (location= x r))
-                  (typep y '(signed-byte 32)))
-             (inst lea r (ea y x)))
+(defun emit-inline-smul (op x y result vop dummy taggedp) ; signed multiply
+  (declare (ignore op dummy))
+  (multiple-value-setq (x y) (prepare-alu-operands 'mul x y vop 'identity t))
+  (aver (not (integerp x)))
+  (let ((constant-y (integerp y))) ; don't need to unscale Y if true
+    (when (and constant-y (not (typep y '(signed-byte 32))))
+      (setq y (register-inline-constant :qword y)))
+    (let ((reg (if (gpr-tn-p result) result temp-reg-tn)))
+      (cond ((integerp y)
+             (inst imul reg x y))
+            ((alias-p reg y)
+             (when taggedp
+               (inst sar reg n-fixnum-tag-bits))
+             (inst imul reg x)
+             ;; If all operands are LOCATION= then both args got unfixnumized
+             ;; by the preceding SAR, so re-fixnumize the result.
+             (when (and (alias-p reg x) taggedp)
+               (inst shl reg n-fixnum-tag-bits)))
             (t
-             (move r x)
-             (inst add r (constantize y)))))))
+             (move reg x) ; this can't clobber Y
+             (when (and (not constant-y) taggedp)
+               (inst sar reg n-fixnum-tag-bits))
+             (inst imul reg y)))
+      (move result reg))))
 
-(define-vop (fast-+/signed=>signed fast-safe-arith-op)
-  (:translate +)
-  (:args (x :scs (signed-reg) :target r
-            :load-if (not (and (sc-is x signed-stack)
-                               (sc-is y signed-reg)
-                               (sc-is r signed-stack)
-                               (location= x r))))
-         (y :scs (signed-reg signed-stack)))
-  (:arg-types signed-num signed-num)
-  (:results (r :scs (signed-reg) :from (:argument 0)
-               :load-if (not (and (sc-is x signed-stack)
-                                  (sc-is y signed-reg)
-                                  (location= x r)))))
-  (:result-types signed-num)
-  (:note "inline (signed-byte 64) arithmetic")
-  (:generator 5
-    (cond ((and (sc-is x signed-reg) (sc-is y signed-reg) (sc-is r signed-reg)
-                (not (location= x r)))
-           (inst lea r (ea x y)))
-          (t
-           (move r x)
-           (inst add r y)))))
+;;; Special handling of add on the x86; can sometimes use lea to avoid a
+;;; register move, otherwise it uses add.
+;;;
+;;; This should more-or-less be the general skeleton for any two-operand
+;;; arithmetic vop in terms of the case-by-case analysis for where the result
+;;; is going.
+;;; Non-commutative operations (notably SUB) need a little extra care.
+;;; MUL is also a bit different due to asymmetry of the instruction.
+(defun emit-inline-add-sub (op x y result vop const-tn-xform)
+  (declare (type (member add sub) op))
+  (multiple-value-setq (x y)
+    (prepare-alu-operands op x y vop const-tn-xform (eq op 'add)))
+
+  (when (and (eq op 'sub) (and (integerp y) (not (eql y (ash -1 63)))))
+    ;; If Y is -2147483648 then the negation is not (signed-byte 32).
+    ;; How likely is someone to subtract that?
+    (setq op 'add y (- y)))
+
+  ;; Oversized integers need to become RIP-relative constants
+  (when (integerp x) (setq x (constantize x)))
+  (when (integerp y) (setq y (constantize y)))
+
+  (macrolet ((op () 'op)) ; shield OP from being treated as literal by INST macro
+    (let* ((y-is-reg-or-imm32 (or (gpr-tn-p y) (typep y '(signed-byte 32))))
+           (commutative (eq op 'add)))
+      (when (alias-p result x)
+        (cond ((eql y -1) (inst dec x))
+              ((eql y +1) (inst inc x))
+              ((or (gpr-tn-p x) y-is-reg-or-imm32)
+               ;; At most one memory operand. Result could be memory or register.
+               (inst (op) x y))
+              (t ; two memory operands: X is not a GPR, Y is neither GPR nor immm
+               (inst mov temp-reg-tn y)
+               (inst (op) x temp-reg-tn)))
+        (return-from emit-inline-add-sub))
+      (when (and (alias-p result y) commutative)
+        ;; Result in the same location as Y can happen because we no longer specify
+        ;; that RESULT is live from (:ARGUMENT 0).
+        (cond ((or (gpr-tn-p x) (gpr-tn-p y))
+               (inst (op) y x))
+              (t
+               (inst mov temp-reg-tn x)
+               (inst (op) y temp-reg-tn)))
+        (return-from emit-inline-add-sub))
+      (let ((reg (if (and (gpr-tn-p result)
+                          ;; If Y aliases RESULT in SUB, then an initial (move reg x)
+                          ;; could clobber Y.
+                          (or commutative (not (alias-p result y))))
+                     result
+                     temp-reg-tn)))
+        (cond ((and (eq op 'add) ; LEA can't do subtraction
+                    (gpr-tn-p x) y-is-reg-or-imm32) ; register + (register | imm32)
+               (inst lea reg (if (fixnump y) (ea y x) (ea x y))))
+              (t
+               ;; If commutative, then neither X nor Y is an alias of RESULT.
+               ;; If non-commutative, then RESULT could be Y, in which case REG is
+               ;; TEMP-REG-TN so that we don't trash Y by moving X into it.
+               (inst mov reg x)
+               (inst (op) reg y)))
+        (move result reg)))))
+
+;;; FIXME: we shouldn't need 12 variants, plus the modular variants, for what should
+;;; be 1 vop. Certainly + and - can be done by one vop which examines lvar-fun-name.
+;;; And the "/c" (constant 2nd arg) vops can be removed since there is no extra register
+;;; consumed anyway. When I tried to do those simplifications, the modular vops went
+;;; haywire because they inherit from vops of particular names.
+(macrolet ((def (fun-name name name/c scs primtype type cost
+                          &optional (val-xform 'identity) &rest extra
+                          &aux (note (format nil "inline ~(~a~) arithmetic" type))
+                               (op (ecase fun-name (+ 'add) (- 'sub) (* 'mul)))
+                               (emit (if (eq op 'mul) 'emit-inline-smul 'emit-inline-add-sub)))
+             ;; Avoid some unnecessary code in the vop generator by specifying
+             ;; ":load-if nil" everywhere. This is not about semantics -
+             ;; it's just removing code that would be unreachable.
+             `(progn
+                (define-vop (,name fast-safe-arith-op)
+                  (:translate ,fun-name)
+                  (:args (x :scs (,@scs immediate) :target r :load-if nil)
+                         (y :scs (,@scs immediate) :load-if nil))
+                  (:arg-types ,primtype ,primtype)
+                  (:results (r :scs ,scs :load-if nil))
+                  (:result-types ,primtype)
+                  (:vop-var vop) ;; (:node-var node)
+                  (:note ,note)
+                  (:generator ,(1+ cost)
+                   (,emit ',op x y r vop ',val-xform ,@extra)))
+                (define-vop (,name/c fast-safe-arith-op)
+                  (:translate ,fun-name)
+                  (:args (x :scs ,scs :target r :load-if nil))
+                  (:info y)
+                  (:arg-types ,primtype (:constant ,type))
+                  (:results (r :scs ,scs :load-if nil))
+                  (:result-types ,primtype)
+                  (:vop-var vop) ;; (:node-var node)
+                  (:note ,note)
+                  (:generator ,cost
+                   (,emit ',op x (,val-xform y) r vop ',val-xform ,@extra))))))
+  (def + fast-+/fixnum=>fixnum fast-+-c/fixnum=>fixnum
+       (any-reg control-stack) tagged-num fixnum 1 fixnumize)
+  (def + fast-+/signed=>signed fast-+-c/signed=>signed
+       (signed-reg signed-stack) signed-num (signed-byte 64) 3)
+  (def + fast-+/unsigned=>unsigned fast-+-c/unsigned=>unsigned
+       (unsigned-reg unsigned-stack) unsigned-num (unsigned-byte 64) 3)
+
+  (def - fast--/fixnum=>fixnum fast---c/fixnum=>fixnum
+       (any-reg control-stack) tagged-num fixnum 1 fixnumize)
+  (def - fast--/signed=>signed fast---c/signed=>signed
+       (signed-reg signed-stack) signed-num (signed-byte 64) 3)
+  (def - fast--/unsigned=>unsigned fast---c/unsigned=>unsigned
+       (unsigned-reg unsigned-stack) unsigned-num (unsigned-byte 64) 3)
+
+  (def * fast-*/fixnum=>fixnum fast-*-c/fixnum=>fixnum
+       (any-reg control-stack) tagged-num fixnum 1 identity t)
+  (def * fast-*/signed=>signed fast-*-c/signed=>signed
+       (signed-reg signed-stack) signed-num (signed-byte 64) 3 identity nil)
+  ;; unsigned is different because MUL always uses RAX:RDX as 1st operand.
+  )
 
 ;;;; Special logand cases: (logand signed unsigned) => unsigned
 
@@ -382,143 +476,7 @@
          (y :scs (signed-reg signed-stack)))
   (:arg-types unsigned-num signed-num))
 
-
-(define-vop (fast-+-c/signed=>signed fast-safe-arith-op)
-  (:translate +)
-  (:args (x :target r :scs (signed-reg)
-            :load-if (or (not (typep y '(signed-byte 32)))
-                         (not (sc-is r signed-reg signed-stack)))))
-  (:info y)
-  (:arg-types signed-num (:constant (signed-byte 64)))
-  (:results (r :scs (signed-reg)
-               :load-if (or (not (location= x r))
-                            (not (typep y '(signed-byte 32))))))
-  (:result-types signed-num)
-  (:note "inline (signed-byte 64) arithmetic")
-  (:generator 4
-    (cond ((and (sc-is x signed-reg) (sc-is r signed-reg)
-                (not (location= x r))
-                (typep y '(signed-byte 32)))
-           (inst lea r (ea y x)))
-          (t
-           (move r x)
-           (cond ((= y 1)
-                  (inst inc r))
-                 (t
-                  (inst add r (constantize y))))))))
-
-(define-vop (fast-+/unsigned=>unsigned fast-safe-arith-op)
-  (:translate +)
-  (:args (x :scs (unsigned-reg) :target r
-            :load-if (not (and (sc-is x unsigned-stack)
-                               (sc-is y unsigned-reg)
-                               (sc-is r unsigned-stack)
-                               (location= x r))))
-         (y :scs (unsigned-reg unsigned-stack)))
-  (:arg-types unsigned-num unsigned-num)
-  (:results (r :scs (unsigned-reg) :from (:argument 0)
-               :load-if (not (and (sc-is x unsigned-stack)
-                                  (sc-is y unsigned-reg)
-                                  (sc-is r unsigned-stack)
-                                  (location= x r)))))
-  (:result-types unsigned-num)
-  (:note "inline (unsigned-byte 64) arithmetic")
-  (:generator 5
-    (cond ((and (sc-is x unsigned-reg) (sc-is y unsigned-reg)
-                (sc-is r unsigned-reg) (not (location= x r)))
-           (inst lea r (ea x y)))
-          (t
-           (move r x)
-           (inst add r y)))))
-
-(define-vop (fast-+-c/unsigned=>unsigned fast-safe-arith-op)
-  (:translate +)
-  (:args (x :target r :scs (unsigned-reg)
-            :load-if (or (not (typep y '(unsigned-byte 31)))
-                         (not (sc-is x unsigned-reg unsigned-stack)))))
-  (:info y)
-  (:arg-types unsigned-num (:constant (unsigned-byte 64)))
-  (:results (r :scs (unsigned-reg)
-               :load-if (or (not (location= x r))
-                            (not (typep y '(unsigned-byte 31))))))
-  (:result-types unsigned-num)
-  (:note "inline (unsigned-byte 64) arithmetic")
-  (:generator 4
-    (cond ((and (sc-is x unsigned-reg) (sc-is r unsigned-reg)
-                (not (location= x r))
-                (typep y '(unsigned-byte 31)))
-           (inst lea r (ea y x)))
-          (t
-           (move r x)
-           (cond ((= y 1)
-                  (inst inc r))
-                 (t
-                  (inst add r (constantize y))))))))
-
 ;;;; multiplication and division
-
-(define-vop (fast-*/fixnum=>fixnum fast-safe-arith-op)
-  (:translate *)
-  ;; We need different loading characteristics.
-  (:args (x :scs (any-reg) :target r)
-         (y :scs (any-reg control-stack)))
-  (:arg-types tagged-num tagged-num)
-  (:results (r :scs (any-reg) :from (:argument 0)))
-  (:result-types tagged-num)
-  (:note "inline fixnum arithmetic")
-  (:generator 4
-    (move r x)
-    (inst sar r n-fixnum-tag-bits)
-    (inst imul r y)))
-
-(define-vop (fast-*-c/fixnum=>fixnum fast-safe-arith-op)
-  (:translate *)
-  ;; We need different loading characteristics.
-  (:args (x :scs (any-reg)
-            :load-if (or (not (typep y '(signed-byte 32)))
-                         (not (sc-is x any-reg control-stack)))))
-  (:info y)
-  (:arg-types tagged-num (:constant fixnum))
-  (:results (r :scs (any-reg)))
-  (:result-types tagged-num)
-  (:note "inline fixnum arithmetic")
-  (:generator 3
-    (cond ((typep y '(signed-byte 32))
-           (inst imul r x y))
-          (t
-           (move r x)
-           (inst imul r (register-inline-constant :qword y))))))
-
-(define-vop (fast-*/signed=>signed fast-safe-arith-op)
-  (:translate *)
-  ;; We need different loading characteristics.
-  (:args (x :scs (signed-reg) :target r)
-         (y :scs (signed-reg signed-stack)))
-  (:arg-types signed-num signed-num)
-  (:results (r :scs (signed-reg) :from (:argument 0)))
-  (:result-types signed-num)
-  (:note "inline (signed-byte 64) arithmetic")
-  (:generator 5
-    (move r x)
-    (inst imul r y)))
-
-(define-vop (fast-*-c/signed=>signed fast-safe-arith-op)
-  (:translate *)
-  ;; We need different loading characteristics.
-  (:args (x :scs (signed-reg)
-            :load-if (or (not (typep y '(signed-byte 32)))
-                         (not (sc-is x signed-reg signed-stack)))))
-  (:info y)
-  (:arg-types signed-num (:constant (signed-byte 64)))
-  (:results (r :scs (signed-reg)))
-  (:result-types signed-num)
-  (:note "inline (signed-byte 64) arithmetic")
-  (:generator 4
-    (cond ((typep y '(signed-byte 32))
-           (inst imul r x y))
-          (t
-           (move r x)
-           (inst imul r (register-inline-constant :qword y))))))
 
 (define-vop (fast-*/unsigned=>unsigned fast-safe-arith-op)
   (:translate *)
@@ -1379,51 +1337,59 @@ constant shift greater than word length")))
                            nil)))))))
   (define-logtest-vops))
 
-(defknown %logbitp (integer unsigned-byte) boolean
+;;; %LOGBITP has the same argument order as ordinary LOGBITP which is * backwards *
+;;; relative to every other architecture.
+;;; I suspect the others have a predilection for placing codegen info args last.
+(defknown %logbitp ((mod 64) (or signed-word word)) boolean
   (movable foldable flushable always-translatable))
 
 ;;; only for constant folding within the compiler
-(defun %logbitp (integer index)
+(defun %logbitp (index integer)
+  (declare (notinline logbitp))
+  ;; Normally an "intepreter stub" is implemented in terms of itself, not in terms
+  ;; of the public function. But this has to work in the cross-compiler too.
+  ;; A way to do that is define a version of %LOGBITP in cross-misc.
+  ;; Then brings a new problem: inconsistent argument order across the architectures.
   (logbitp index integer))
 
-;;; too much work to do the non-constant case (maybe?)
-(define-vop (fast-logbitp-c/fixnum fast-conditional-c/fixnum)
+;;; Normally we define a spectrum of vops to handle {unsigned,signed,any}-reg and
+;;; constant/non-constant operands. That's often unnecessary. Certainly for this vop.
+(define-vop (%logbitp fast-safe-arith-op)
   (:translate %logbitp)
   (:conditional :c)
-  (:arg-types tagged-num (:constant (integer 0 #.(- 63 n-fixnum-tag-bits))))
+  (:args (bit :scs (signed-reg signed-stack unsigned-reg unsigned-stack
+                    any-reg control-stack) :load-if nil)
+         ;; CONSTANT here is to allow integers exceeding a fixnum which get NIL
+         ;; from IMMEDIATE-CONSTANT-SC. This is only an issue for vops which don't
+         ;; take a codegen info for the constant.
+         ;; IMMEDIATE is always allowed and pertains to fixnum-sized constants.
+         (int :scs (constant signed-reg signed-stack unsigned-reg unsigned-stack)
+              :load-if nil))
+  (:arg-types untagged-num untagged-num)
   (:generator 4
-    (let ((bit (+ y n-fixnum-tag-bits)))
-      (inst bt (if (<= bit 31) :dword :qword) x bit))))
+    (when (sc-is int constant immediate) (setq int (tn-value int)))
+    ;; Force INT to be a RIP-relative operand if it is a constant.
+    (let ((word (if (integerp int) (register-inline-constant :qword int) int))
+          (bit (cond ((sc-is bit signed-reg unsigned-reg) bit)
+                     (t (inst mov :dword temp-reg-tn bit)
+                        (when (sc-is bit any-reg control-stack)
+                          (inst shr :dword temp-reg-tn n-fixnum-tag-bits))
+                        temp-reg-tn))))
+      (inst bt word bit))))
 
-(define-vop (fast-logbitp/signed fast-conditional/signed)
-  (:args (x :scs (signed-reg signed-stack))
-         (y :scs (signed-reg)))
+(define-vop (%logbitp/c fast-safe-arith-op)
   (:translate %logbitp)
   (:conditional :c)
-  (:generator 6
-    (inst bt x y)))
-
-(define-vop (fast-logbitp-c/signed fast-conditional-c/signed)
-  (:translate %logbitp)
-  (:conditional :c)
-  (:arg-types signed-num (:constant (integer 0 63)))
-  (:generator 5
-    (inst bt x y)))
-
-(define-vop (fast-logbitp/unsigned fast-conditional/unsigned)
-  (:args (x :scs (unsigned-reg unsigned-stack))
-         (y :scs (unsigned-reg)))
-  (:translate %logbitp)
-  (:conditional :c)
-  (:generator 6
-    (inst bt x y)))
-
-(define-vop (fast-logbitp-c/unsigned fast-conditional-c/unsigned)
-  (:translate %logbitp)
-  (:conditional :c)
-  (:arg-types unsigned-num (:constant (integer 0 63)))
-  (:generator 5
-    (inst bt x y)))
+  (:info bit)
+  (:args (int :scs (signed-reg signed-stack unsigned-reg unsigned-stack
+                    any-reg control-stack) :load-if nil))
+  (:arg-types (:constant (mod 64)) untagged-num)
+  (:generator 1
+    (when (sc-is int any-reg control-stack)
+      ;; Adjust the index up by something.
+      ;; Reading beyond the sign bit is the same as reading the sign bit.
+      (setf bit (min (1- n-word-bits) (+ bit n-fixnum-tag-bits))))
+    (inst bt (if (<= bit 31) :dword :qword) int bit)))
 
 (defun emit-optimized-cmp (x y)
   (if (and (gpr-tn-p x) (eql y 0))
@@ -1630,6 +1596,18 @@ constant shift greater than word length")))
 ;;;; Modular functions
 
 (defmacro define-mod-binop ((name prototype) function)
+  (unless (search "FAST-*" (string prototype)) ; fast-* doesn't accept stack locations yet
+    (return-from define-mod-binop
+      `(define-vop (,name ,prototype)
+         (:args (x :scs (unsigned-reg signed-reg unsigned-stack signed-stack immediate)
+                   :load-if nil :target r)
+                (y :scs (unsigned-reg signed-reg unsigned-stack signed-stack immediate)
+                   :load-if nil))
+         (:arg-types untagged-num untagged-num)
+         (:results (r :scs (unsigned-reg signed-reg unsigned-stack signed-stack)
+                      :load-if nil))
+         (:result-types unsigned-num)
+         (:translate ,function))))
   `(define-vop (,name ,prototype)
        (:args (x :target r :scs (unsigned-reg signed-reg)
                  :load-if (not (and (or (sc-is x unsigned-stack)
@@ -1652,6 +1630,15 @@ constant shift greater than word length")))
      (:result-types unsigned-num)
      (:translate ,function)))
 (defmacro define-mod-binop-c ((name prototype) function)
+  (unless (search "FAST-*" (string prototype)) ; fast-* doesn't accept stack locations yet
+    (return-from define-mod-binop-c
+      `(define-vop (,name ,prototype)
+         (:args (x :target r :scs (unsigned-reg signed-reg unsigned-stack signed-stack) :load-if nil))
+         (:info y)
+         (:arg-types untagged-num (:constant (or (unsigned-byte 64) (signed-byte 64))))
+         (:results (r :scs (unsigned-reg signed-reg unsigned-stack signed-stack) :load-if nil))
+         (:result-types unsigned-num)
+         (:translate ,function))))
   `(define-vop (,name ,prototype)
        (:args (x :target r :scs (unsigned-reg signed-reg)
                  :load-if t))
@@ -1662,13 +1649,13 @@ constant shift greater than word length")))
      (:result-types unsigned-num)
      (:translate ,function)))
 
-(macrolet ((def (name -c-p)
+(macrolet ((def (name -c-p &aux (inherit name))
              (let ((fun64   (symbolicate name "-MOD64"))
                    (funfx   (symbolicate name "-MODFX"))
-                   (vopu    (symbolicate "FAST-" name "/UNSIGNED=>UNSIGNED"))
-                   (vopcu   (symbolicate "FAST-" name "-C/UNSIGNED=>UNSIGNED"))
-                   (vopf    (symbolicate "FAST-" name "/FIXNUM=>FIXNUM"))
-                   (vopcf   (symbolicate "FAST-" name "-C/FIXNUM=>FIXNUM"))
+                   (vopu    (symbolicate "FAST-" inherit "/UNSIGNED=>UNSIGNED"))
+                   (vopcu   (symbolicate "FAST-" inherit "-C/UNSIGNED=>UNSIGNED"))
+                   (vopf    (symbolicate "FAST-" inherit "/FIXNUM=>FIXNUM"))
+                   (vopcf   (symbolicate "FAST-" inherit "-C/FIXNUM=>FIXNUM"))
                    (vop64u  (symbolicate "FAST-" name "-MOD64/WORD=>UNSIGNED"))
                    (vop64f  (symbolicate "FAST-" name "-MOD64/FIXNUM=>FIXNUM"))
                    (vop64cu (symbolicate "FAST-" name "-MOD64-C/WORD=>UNSIGNED"))
@@ -1681,6 +1668,9 @@ constant shift greater than word length")))
                   (define-modular-fun ,funfx (x y) ,name :tagged t
                                       #.(- n-word-bits n-fixnum-tag-bits))
                   (define-mod-binop (,vop64u ,vopu) ,fun64)
+                  ;; This seems a bit lame. Could we not just have one vop
+                  ;; which which takes any combination of signed/unsigned reg
+                  ;; and which translates the normal function and the modular function?
                   (define-vop (,vop64f ,vopf) (:translate ,fun64))
                   (define-vop (,vopfxf ,vopf) (:translate ,funfx))
                   ,@(when -c-p

@@ -428,6 +428,26 @@
       (bug "Unknown list item seek transform: name=~S, key-functions=~S variant=~S"
            function-name key-functions variant)))
 
+;;; There is no open-code limit on this transform if it succeeds.
+(defun memq-translation-as-case (items node)
+  (let ((items (lvar-value items)))
+    (when (and (proper-list-p items)
+               (let ((uniqued (remove-duplicates items)))
+                 (and (cdddr uniqued) ; require > 3 items
+                      (= (length uniqued) (length items)) ; and no duplicates
+                      (every #'symbolp items) ; and all symbols
+                      ;; Reject if can't be hashed with at most 2 items per bin
+                      (<= (pick-best-sxhash-bits uniqued 'sxhash) 2))))
+      (if (if-p (node-dest node))
+          ;; Special variant for predication of (MEMBER x '(list-of-symbols) :test #'eq)
+          ;; which lets CASE see that it doesn't need a vector of return values.
+          ;; The value delivered to an IF node must be a list because MEMBER and MEMQ
+          ;; are declared in fndb to return a list. If it were just the symbol T,
+          ;; then type inference would get all whacky on you.
+          `(case item (,items '(t)))
+          `(case item
+             ,@(maplist (lambda (list) `((,(car list)) ',list)) items))))))
+
 (defparameter *list-open-code-limit* 128)
 
 (defun transform-list-item-seek (name item list key test test-not node)
@@ -439,6 +459,16 @@
   ;; Ditto for KEY IDENTITY.
   (when (and key (lvar-fun-is key '(identity)))
     (setf key nil))
+
+  (awhen (and (eq name 'member)
+              ;; If the test was EQL, we've already changed it to NIL.
+              (or (not test) (lvar-fun-is test '(eq)))
+              (not test-not) ; keep it simple, no other keywords allowed
+              (not key)
+              (constant-lvar-p list)
+              (memq-translation-as-case list node))
+    (return-from transform-list-item-seek it))
+
   ;; Key can legally be NIL, but if it's NIL for sure we pretend it's
   ;; not there at all. If it might be NIL, make up a form to that
   ;; ensures it is a function.
@@ -458,7 +488,14 @@
                           (setf test nil)
                           'eq)
                          ((and (not test) (not test-not))
-                          (when (eq-comparable-type-p (lvar-type item))
+                          (when (cond ((or (neq name 'adjoin)
+                                           (not key))
+                                       (eq-comparable-type-p (lvar-type item)))
+                                      (t
+                                       (let ((type (lvar-fun-type key)))
+                                         (when (fun-type-p type)
+                                           (eq-comparable-type-p
+                                            (single-value-type (fun-type-returns type)))))))
                             'eq))))
            (funs (delete nil (list (when key (list key 'key))
                                    (when test (list test 'test))
@@ -587,14 +624,15 @@
   (def member t)
   (def rassoc t))
 
-(deftransform memq ((item list) (t (constant-arg list)))
-  (labels ((rec (tail)
-             (if tail
-                 `(if (eq item ',(car tail))
-                      ',tail
-                      ,(rec (cdr tail)))
-                 nil)))
-    (rec (lvar-value list))))
+(deftransform memq ((item list) (t (constant-arg list)) * :node node)
+  (or (memq-translation-as-case list node)
+      (labels ((rec (tail)
+                 (if tail
+                     `(if (eq item ',(car tail))
+                          ',tail
+                          ,(rec (cdr tail)))
+                     nil)))
+        (rec (lvar-value list)))))
 
 ;;; A similar transform used to apply to MEMBER and ASSOC, but since
 ;;; TRANSFORM-LIST-ITEM-SEEK now takes care of them those transform
@@ -2135,8 +2173,11 @@
                                        (t (or list vector) &rest t))
                 (when (and (constant-lvar-p sequence)
                            (zerop (length (lvar-value sequence))))
-                  (return-from ,fun-name
-                    '(lambda (&rest args) (declare (ignore args)) nil)))
+                  (if (and test test-not)
+                      ;; even though one kwd arg could legit be NIL, it's not interesting.
+                      (give-up-ir1-transform)
+                      (return-from ,fun-name
+                        '(lambda (&rest args) (declare (ignore args)) nil))))
                 (let ((effective-test
                        (unless test-not
                          (if test (lvar-fun-name* test) 'eql)))
@@ -2192,7 +2233,7 @@
             (reversedp (and from-end (lvar-value from-end))))
         (when (every #'symbolp items)
           ;; PICK-BEST will stupidly hash dups and call that a collision.
-          (when (= (pick-best-symbol-hash-bits (remove-duplicates items) 'sxhash) 1)
+          (when (= (pick-best-sxhash-bits (remove-duplicates items) 'sxhash) 1)
             ;; Construct a map from symbol to position so that correct results
             ;; are obtained for :from-end, and/or with duplicates present.
             ;; Precomputing it is easier than trying to roll the logic into the
@@ -2214,13 +2255,26 @@
               (return-from position
                 `(lambda (item sequence &rest rest)
                    (declare (ignore sequence rest))
-                   (case item ,@(nreverse clauses)))))))
+                   (case item
+                     ,@(nreverse clauses)
+                     ;; This CASE looks like it could return NIL, which is potentially
+                     ;; in conflict with the derived type of POSITION when we have already
+                     ;; determined that the item is in the list. So the fallthrough
+                     ;; value has to be numeric. It's actually unreachable.
+                     ,@(when (csubtypep (lvar-type item) (specifier-type `(member ,@seen)))
+                         `(((t 0))))))))))
         (unless (nthcdr 10 items)
           (let ((clauses (loop for x in items for i from 0
                                ;; Later transforms will change EQL to EQ if appropriate.
                                collect `((,effective-test item ',x) ,i))))
             ;; FIXME: dups cause more than one test on the same key because IR1
             ;; doesn't propagate information about which IFs can't possibly match.
+            ;; FIXME: suffers from same type derivation issue as above.
+            ;;        e.g. (- (position (the (member 10 20) x) #(1 2 5 10 15 20 30)))
+            ;; -> "Constant NIL conflicts with its asserted type NUMBER."
+            ;; But a fix for the general case (with any :TEST) has to figure out
+            ;; whether the returned value must definitely be non-NIL before doing
+            ;; the same thing as above which we claim is unreachable.
             (return-from position
               `(lambda (item sequence &rest rest)
                  (declare (ignore sequence rest))

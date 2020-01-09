@@ -467,19 +467,30 @@
            (%primitive var-alloc total-words 'alloc-code
                        ;; subtract 1 because var-alloc always adds 1 word
                        ;; for the header, which is not right for code objects.
-                       -1 code-header-widetag other-pointer-lowtag)))
-    ;; The 1st slot beyond the header stores the boxed header size in bytes
-    ;; as an untagged number, which has the same representation as a tagged
-    ;; value denoting a word count if WORD-SHIFT = N-FIXNUM-TAG-BITS.
-    ;; This slot is allowed to be 0 prior to writing any pointer descriptors
-    ;; into the object.
-    ;;
-    ;; If 64-bit words, assign a serial number unless the space is NIL.
-    ;; Use ATOMIC-INCF on the serialno to get automatic wraparound,
-    ;; and not because atomicity makes things deterministic, which it doesn't
-    ;; if there are several threads allocating code.
-    ;; TODO: this unnecessarily calls CODE-HEADER-SET if code cards use soft
-    ;; marking. Maybe pin the object and use (SETF SAP-REF-WORD) instead.
+                       -1 code-header-widetag other-pointer-lowtag nil)))
+
+    (with-pinned-objects (code)
+      (let ((sap (sap+ (int-sap (get-lisp-obj-address code))
+                       (- other-pointer-lowtag))))
+        ;; The immobile space allocator pre-zeroes, and also it needs a nonzero
+        ;; value in the boxed word count because otherwise it looks like
+        ;; an immobile space page filler. So don't do any more zeroing there.
+        ;; (Could dead immobile objects be converted to use FILLER-WIDETAG instead?)
+        (unless (immobile-space-obj-p code)
+          ;; Before writing the boxed word count, zeroize up to and including 1 word
+          ;; after the boxed header so that all point words can be safely read
+          ;; by GC and so the jump table count word is 0.
+          (loop for byte-index from (ash boxed word-shift) downto (ash 2 word-shift)
+                by n-word-bytes
+                do (setf (sap-ref-word sap byte-index) 0)))
+        ;; The 1st slot beyond the header stores the boxed header size in bytes
+        ;; as an untagged number, which has the same representation as a tagged
+        ;; value denoting a word count if WORD-SHIFT = N-FIXNUM-TAG-BITS.
+        ;; This boxed-size MUST be 0 prior to writing any pointers into the object
+        ;; because the boxed words will not necessarily have been pre-zeroed;
+        ;; scavenging them prior to zeroing them out would see wild pointers.
+        (setf (sap-ref-word sap (ash code-boxed-size-slot word-shift))
+              (ash boxed word-shift))))
 
     ;; FIXME: Sort out 64-bit and cheneygc.
     #+(and 64-bit cheneygc)
@@ -487,10 +498,4 @@
           (%make-lisp-obj
            (logior (ash total-words 32)
                    sb-vm:code-header-widetag)))
-    (setf (code-header-ref code code-boxed-size-slot)
-          (%make-lisp-obj
-           (logior (ash boxed word-shift)
-                   #+64-bit
-                   (logand (ash (atomic-incf sb-fasl::*code-serialno*) 32)
-                           most-positive-word))))
     code))

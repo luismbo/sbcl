@@ -155,8 +155,8 @@ Code header representation:
   |            total words          | gc_gen | 0 | 0 | widetag |
   |            (4 bytes)            |        |   |   |         |
   +------------------------------------------------------------+  [64-bit words]
-  |            serial#              |   N boxed header bytes   |
-  |            (4 bytes)            |        (4 bytes)         |
+  |                                 |   N boxed header bytes   |
+  |                                 |        (4 bytes)         |
   +------------------------------------------------------------+
 
   the two zero bytes are reserved for future use
@@ -194,7 +194,6 @@ during backtrace.
   ;; This is the length of the boxed section, in bytes, not tagged.
   ;; It will be a multiple of the word size.
   ;; It can be accessed as a tagged value in Lisp by shifting.
-  ;; The upper 4 bytes store code-serial# on 64-bit words.
   (boxed-size :type fixnum ; see above figure
               :ref-known (flushable movable)
               :ref-trans %code-boxed-size)
@@ -394,7 +393,9 @@ during backtrace.
   ;; makes it "off" by N-FIXNUM-TAG-BITS, which is bothersome,
   ;; so there's a transform on SYMBOL-TLS-INDEX to make it sane.
   #+(and sb-thread (not 64-bit))
-  (tls-index :ref-known (flushable) :ref-trans %symbol-tls-index))
+  (tls-index :type (and fixnum unsigned-byte) ; too generous still?
+             :ref-known (flushable)
+             :ref-trans %symbol-tls-index))
 
 (define-primitive-object (complex-single-float
                           :lowtag other-pointer-lowtag
@@ -574,12 +575,6 @@ during backtrace.
   ;; then stuff them at the end, for lack of any place better.
   . #.*thread-trailer-slots*)
 
-;;; Compute the smallest TLS index that will be assigned to a special variable
-;;; that does not map onto a thread slot.
-;;; Given N thread slots, the tls indices are 0..N-1 scaled by word-shift.
-;;; This constant is the index prior to scaling.
-#+sb-thread (defconstant sb-thread::tls-index-start primitive-thread-object-length)
-
 (defconstant code-header-size-shift #+64-bit 32 #-64-bit n-widetag-bits)
 (declaim (inline code-object-size code-header-words %code-code-size))
 #-sb-xc-host
@@ -598,23 +593,28 @@ during backtrace.
     ;; for 32-bit words. The boxed count can't in practice be that large.
     (ldb (byte 22 0) (ash (%code-boxed-size code) (- n-fixnum-tag-bits word-shift))))
 
-  ;; Possibly not the best place for this definition, but other accessors
-  ;; for primitive objects are here too.
-  (defun code-jump-table-words (code)
-    (declare (code-component code)
-             (ignorable code))
-    #-(or x86 x86-64) 0
-    #+(or x86 x86-64)
-    (with-pinned-objects (code)
-      (truly-the (unsigned-byte 16) (sap-ref-word (code-instructions code) 0))))
-
   (defun %code-code-size (code)
     (declare (code-component code))
     (- (code-object-size code) (ash (code-header-words code) word-shift)))
 
+  ;; Possibly not the best place for this definition, but other accessors
+  ;; for primitive objects are here too.
+  (defun code-jump-table-words (code)
+    (declare (code-component code))
+    (if (eql (code-header-ref code code-boxed-size-slot) 0)
+        0
+        (with-pinned-objects (code)
+          (ldb (byte 14 0) (sap-ref-word (code-instructions code) 0)))))
+
+  ;; Serial# is stored in 18 bits of the first unboxed data word, the same word
+  ;; which holds the count of jump table entries. The primary purpose of the serial#
+  ;; is to uniquely identify code objects independent of any naming.
+  ;; The serial# is globally unique unless the global counter wraps around.
   (defun %code-serialno (code)
-    (declare (code-component code) (ignorable code))
-    #+64-bit ; extract high 4 bytes of boxed-size slot
-    (ash (%code-boxed-size code) (- n-fixnum-tag-bits 32)))
+    (declare (code-component code))
+    (if (eql (code-header-ref code code-boxed-size-slot) 0)
+        0
+        (with-pinned-objects (code)
+          (ldb (byte 18 14) (sap-ref-word (code-instructions code) 0)))))
 
 ) ; end PROGN

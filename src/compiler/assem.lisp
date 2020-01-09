@@ -37,10 +37,6 @@
   ;; definitions were not compiled with the scheduler turned on, this
   ;; has no effect.
   (run-scheduler nil)
-  ;; If a function, then this is funcalled for each inst emitted with
-  ;; the segment, the VOP, the name of the inst (as a string), and the
-  ;; inst arguments.
-  (inst-hook nil :type (or function null))
   ;; what position does this correspond to? Initially, positions and
   ;; indexes are the same, but after we start collapsing choosers,
   ;; positions can change while indexes stay the same.
@@ -112,6 +108,7 @@
   ;; *COLLECT-DYNAMIC-STATISTICS* but is faster to reference.
   #+sb-dyncount
   (collect-dynamic-statistics nil))
+(declaim (freeze-type segment))
 (defprinter (segment :identity t))
 
 ;;; Record a FIXUP of KIND occurring at the current position in SEGMENT
@@ -238,6 +235,7 @@
   (write-dependents (make-sset) :type sset)
   ;; instructions which read what we write
   (read-dependents (make-sset) :type sset))
+(declaim (freeze-type instruction))
 #+sb-show-assem (defvar *inst-ids* (make-hash-table :test 'eq))
 #+sb-show-assem (defvar *next-inst-id* 0)
 (defmethod print-object ((inst instruction) stream)
@@ -270,6 +268,7 @@
   (vop)
   (mnemonic)
   (operands)
+  (plist) ; put anything you want here for later passes such as instcombine
   (prev)
   (next))
 (declaim (freeze-type stmt))
@@ -286,20 +285,23 @@
 (defun make-section ()
   (let ((first (make-stmt nil nil :ignore nil)))
     (cons first first)))
-(defun section-head (section) (car section))
-(defun section-tail (section) (cdr section))
+(defun section-start (section) (car section))
+(defmacro section-tail (section) `(cdr ,section))
 
-(defun print-section-contents (section)
-  (do ((statement (section-head section) (stmt-next statement))
-       (i 0))
-      ((null statement))
-    (let ((*print-pretty* nil))
-      (format t "~d: ~@[~a: ~]~a~{ ~a~}~%"
-              i
-              (stmt-labels statement)
-              (stmt-mnemonic statement)
-              (stmt-operands statement)))
-    (incf i)))
+(defstruct asmstream
+  (data-section (make-section) :read-only t)
+  (code-section (make-section) :read-only t)
+  (elsewhere-section (make-section) :read-only t)
+  (elsewhere-label (gen-label "elsewhere start") :read-only t)
+  (inter-function-padding :normal :type (member :normal :nop))
+  ;; for collecting unique "unboxed constants" prior to placing them
+  ;; into the data section
+  (constant-table (make-hash-table :test #'equal) :read-only t)
+  (constant-vector (make-array 16 :adjustable t :fill-pointer 0) :read-only t)
+  ;; tracking where we last wrote an instruction so that SB-C::TRACE-INSTRUCTION
+  ;; can print "in the {x} section" whenever it changes.
+  (tracing-state (list nil nil) :read-only t)) ; segment and vop
+(declaim (freeze-type asmstream))
 
 ;;; Insert STMT after PREDECESSOR.
 (defun insert-stmt (stmt predecessor)
@@ -315,6 +317,12 @@
   (let ((prev (stmt-prev stmt))
         (next (stmt-next stmt)))
     (aver prev)
+    ;; KLUDGE: we're not passing around the section, but instcombine only
+    ;; runs on the code section, so check whether we're deleting the last
+    ;; statement in that section, and fix the last pointer if so.
+    (let ((section (asmstream-code-section *asmstream*)))
+      (when (eq (section-tail section) stmt)
+        (setf (section-tail section) prev)))
     (setf (stmt-next prev) next)
     (when next
       (setf (stmt-prev next) prev))))
@@ -328,6 +336,7 @@
 ;;; This is used only to keep track of which vops emit which insts.
 (defvar **current-vop**)
 
+;;; Return the final statement emitted.
 (defun emit (section &rest things)
   ;; each element of THINGS can be:
   ;; - a label
@@ -335,7 +344,7 @@
   ;; - a function to emit a postit
   (let ((last (section-tail section))
         (vop (if (boundp '**current-vop**) **current-vop**)))
-    (dolist (thing things (rplacd section last))
+    (dolist (thing things (setf (section-tail section) last))
       (if (label-p thing) ; Accumulate multiple labels until the next instruction
           (if (stmt-mnemonic last)
               (setq last (insert-stmt (make-stmt thing vop nil nil) last))
@@ -345,6 +354,10 @@
           (multiple-value-bind (mnemonic operands)
               (if (consp thing) (values (car thing) (cdr thing)) thing)
             (unless (member mnemonic '(.align .byte .skip .coverage-mark))
+              ;; This automatically gets the .QWORD pseudo-op which we use on x86-64
+              ;; to create jump tables, but it's sort of unfortunate that the mnemonic
+              ;; is specific to that backend. It should probably be .LISPWORD instead.
+              ;; Anyway, the good news is that jump tables flag all the labels as used.
               (dolist (operand operands)
                 (if (label-p operand)
                     (setf (label-usedp operand) t)
@@ -352,27 +365,13 @@
                     (%mark-used-labels operand))))
             (if (stmt-mnemonic last)
                 (setq last (insert-stmt (make-stmt nil vop mnemonic operands) last))
-                (setf (stmt-mnemonic last) mnemonic
+                (setf (stmt-vop last) (or (stmt-vop last) vop)
+                      (stmt-mnemonic last) mnemonic
                       (stmt-operands last) operands)))))))
 
 #-(or x86-64 x86)
 (defun %mark-used-labels (operand) ; default implementation
   (declare (ignore operand)))
-
-(defstruct asmstream
-  (data-section (make-section) :read-only t)
-  (code-section (make-section) :read-only t)
-  (elsewhere-section (make-section) :read-only t)
-  (elsewhere-label (gen-label) :read-only t)
-  (inter-function-padding :normal :type (member :normal :nop))
-  ;; for collecting unique "unboxed constants" prior to placing them
-  ;; into the data section
-  (constant-table (make-hash-table :test #'equal) :read-only t)
-  (constant-vector (make-array 16 :adjustable t :fill-pointer 0) :read-only t)
-  ;; tracking where we last wrote an instruction so that SB-C::TRACE-INSTRUCTION
-  ;; can print "in the {x} section" whenever it changes.
-  (tracing-state (list nil nil) :read-only t)) ; segment and vop
-(declaim (freeze-type asmstream))
 
 ;;; This holds either the current section (if writing symbolic assembly)
 ;;; or current segment (if machine-encoding). Use ASSEMBLE to change it.
@@ -908,6 +907,7 @@
                     (:copier nil))
   ;; the number of bytes of filler here
   (bytes 0 :type index))
+(declaim (freeze-type annotation))
 
 ;;;; output functions
 
@@ -1316,48 +1316,68 @@
 
 
 ;;;; interface to the rest of the compiler
-(defun dump-symbolic-asm (statements stream &aux last-vop)
-  (format stream "~3&Assembler input:~%")
-  (do ((statement (stmt-next statements) (stmt-next statements)))
-      ((null statement))
-    (unless (functionp (stmt-mnemonic statement))
-      (binding* ((vop (stmt-vop statement) :exit-if-null))
-        (unless (eq vop last-vop)
-          (format stream "# ~A~%"
-                  (sb-c::vop-info-name (sb-c::vop-info vop))))
-        (setq last-vop vop))
-      (awhen (stmt-labels statement)
-        (format stream "~{~A: ~}~%" (ensure-list it)))
-      (let ((*print-pretty* nil))
-        (format stream "    ~:@(~A~) ~{~A~^, ~}~%"
-                (stmt-mnemonic statement)
-                (stmt-operands statement)))))
-  (format stream "# end of input~%"))
 
-;;; Append all sections, returning the first section.
-(defun append-sections (sections)
-  (let* ((first-section (car sections))
-         (last-stmt (section-tail first-section)))
-    (dolist (section (cdr sections) first-section)
-      (let ((head (section-head section)))
-        (aver (eq (stmt-mnemonic head) :ignore))
-        (when (stmt-next head)
-          (setf (stmt-next last-stmt) (stmt-next head)
-                (stmt-prev (stmt-next head)) last-stmt)
-          (setf last-stmt (section-tail section)))
-        ;; Make this section empty since its contents
-        ;; are already accounted for.
-        (setf (stmt-next head) nil)))
-    (rplacd first-section last-stmt)))
+;;; Return T only if STATEMENT has a label which is potentially a branch
+;;; target, and not merely labeled to store a location of interest.
+(defun labeled-statement-p (statement &aux (labels (stmt-labels statement)))
+  (if (listp labels) (some #'label-usedp labels) (label-usedp labels)))
+
+(defun dump-symbolic-asm (section stream &aux last-vop all-labels (n 0))
+  (format stream "~2&Assembler input:~%")
+  (do ((statement (stmt-next (section-start section)) (stmt-next statement))
+       (*print-pretty* nil))
+      ((null statement))
+    (incf n)
+    (binding* ((vop (stmt-vop statement) :exit-if-null))
+      (unless (eq vop last-vop)
+        (format stream "## ~A~%" (sb-c::vop-info-name (sb-c::vop-info vop))))
+      (setq last-vop vop))
+    (let ((op (stmt-mnemonic statement))
+          (eol-comment ""))
+      (awhen (stmt-labels statement)
+        (let ((list (ensure-list it))
+              (usedp (labeled-statement-p statement)))
+          (setq all-labels (append list all-labels)
+                eol-comment (format nil " # ~{~@[~A~^, ~]~}"
+                                    (mapcar #'label-comment list)))
+          (format stream "~A~{~A: ~}~A~%"
+                  (if usedp "" "# ")
+                  list
+                  (if usedp "" " (notused)"))))
+      (if (functionp op)
+          (format stream "# postit ~S~A~%" op eol-comment)
+          (format stream "    ~:@(~A~) ~{~A~^, ~}~A~%"
+                  op (stmt-operands statement) eol-comment))))
+  (let ((*print-length* nil)
+        (*print-pretty* t)
+        (*print-right-margin* 80))
+    (format stream "# Unused labels:~%~A~%"
+            ;; it comes out in approximately numeric order when reversed
+            (nreverse (remove-if #'label-usedp all-labels))))
+  (format stream "# end of input~%")
+  n)
+
+;;; Append SECOND to the end of FIRST, make SECOND empty, and return FIRST.
+(defun append-sections (first second)
+  (let ((last-stmt (section-tail first)))
+    (let ((head (section-start second)))
+      (aver (eq (stmt-mnemonic head) :ignore))
+      (when (stmt-next head)
+        (setf (stmt-next last-stmt) (stmt-next head)
+              (stmt-prev (stmt-next head)) last-stmt)
+        (setf last-stmt (section-tail second)))
+      (setf (stmt-next head) nil
+            (section-tail second) head))
+    (setf (section-tail first) last-stmt))
+  first)
 
 ;;; Map of opcode symbol to function that emits it into the byte stream
 ;;; (or with the schedulding assembler, into the queue)
 (defglobal *inst-encoder* (make-hash-table :test 'eq))
 
 ;;; Combine INPUTS into one assembly stream and assemble into SEGMENT
-(defun %assemble-sections (segment &rest inputs)
+(defun %assemble (segment section)
   (let ((**current-vop** nil)
-        (section (append-sections inputs))
         (in-without-scheduling)
         (was-scheduling))
     ;; HEADER-SKEW is 1 word (in bytes) if the boxed code header word count is odd.
@@ -1380,7 +1400,7 @@
     (when (and sb-c::*compiler-trace-output*
                (memq :symbolic-asm sb-c::*compile-trace-targets*))
       (dump-symbolic-asm section sb-c::*compiler-trace-output*))
-    (do ((statement (stmt-next (section-head section)) (stmt-next statement)))
+    (do ((statement (stmt-next (section-start section)) (stmt-next statement)))
         ((null statement))
       (awhen (stmt-vop statement) (setq **current-vop** it))
       (dolist (label (ensure-list (stmt-labels statement)))
@@ -1413,23 +1433,23 @@
                          (bug "No encoder for ~S" mnemonic))))))))))
   (finalize-segment segment))
 
-;;; The interface to %ASSEMBLE-SECTIONS
+;;; The interface to %ASSEMBLE
 (defun assemble-sections (asmstream simple-fun-labels segment)
   (let* ((n-entries (length simple-fun-labels))
          (trailer-len (* (+ n-entries 1) 4))
          (end-text (gen-label))
-         (octets
-          (segment-buffer
-           (%assemble-sections
-            segment
-            (asmstream-data-section asmstream)
-            (asmstream-code-section asmstream)
-            (asmstream-elsewhere-section asmstream)
-            (emit (make-section)
-                  end-text
-                  `(.align 2)
-                  `(.skip ,trailer-len)
-                  `(.align ,sb-vm:n-lowtag-bits))))))
+         (combined
+           (append-sections
+             (append-sections (asmstream-data-section asmstream)
+                              (asmstream-code-section asmstream))
+             (let ((section (asmstream-elsewhere-section asmstream)))
+               (emit section
+                     end-text
+                     `(.align 2)
+                     `(.skip ,trailer-len)
+                     `(.align ,sb-vm:n-lowtag-bits))
+               section)))
+         (octets (segment-buffer (%assemble segment combined))))
     (flet ((store-ub16 (index val)
              (multiple-value-bind (b0 b1)
                  #+little-endian
@@ -1559,8 +1579,7 @@
        (emit dest (cons mnemonic operands)))
       (segment ; streaming out of the assembler
        (instruction-hooks dest)
-       (apply action dest (perform-operand-lowering operands)))))
-  mnemonic)
+       (apply action dest (perform-operand-lowering operands))))))
 
 (defun emit-label (label)
   "Emit LABEL at this location in the current section."
@@ -1607,7 +1626,6 @@
       (emit-back-patch segment 0 postit)))
   (setf (segment-final-index segment) (segment-current-index segment))
   (setf (segment-final-posn segment) (segment-current-posn segment))
-  (setf (segment-inst-hook segment) nil)
   (compress-output segment)
   (finalize-positions segment)
   (process-back-patches segment)
@@ -1722,8 +1740,7 @@
            (declare (type segment ,segment-arg) ,@(arg-types))
            ,@(ecase sb-c:*backend-byte-order*
                (:little-endian (nreverse forms))
-               (:big-endian forms))
-           ',name)))))
+               (:big-endian forms)))))))
 
 (defun %def-inst-encoder (symbol &optional thing)
   (setf (gethash symbol *inst-encoder*)
@@ -1828,11 +1845,10 @@
            `((eval-when (:compile-toplevel) (%def-inst-encoder ',fun-name))
              (%def-inst-encoder
               ',fun-name
-              (named-lambda ,(string fun-name)
-                  (,segment-name ,@(cdr lambda-list))
+              (named-lambda ,(string fun-name) (,segment-name ,@(cdr lambda-list))
                 (declare ,@decls)
                 (let ,(and vop-name `((,vop-name **current-vop**)))
-                  ,@emitter)))))
+                  (block ,fun-name ,@emitter))))))
        ',fun-name)))
 
 (defun instruction-hooks (segment)
@@ -1867,11 +1883,98 @@
 (%def-inst-encoder '.skip
                     (lambda (segment n-bytes &optional (pattern 0))
                       (%emit-skip segment n-bytes pattern)))
-(%def-inst-encoder '.lispword
-                   (lambda (segment val)
-                     #+little-endian
-                     (loop for i below sb-vm:n-word-bits by 8
-                           do (emit-byte segment (ldb (byte 8 i) val)))
-                     #+big-endian
-                     (loop for i from (- sb-vm:n-word-bits 8) downto 0 by 8
-                           do (emit-byte segment (ldb (byte 8 i) val)))))
+(%def-inst-encoder
+ '.lispword
+ (lambda (segment &rest vals)
+   (flet ((emit-bytes (segment val)
+            #+little-endian
+            (loop for i below sb-vm:n-word-bits by 8
+                  do (emit-byte segment (ldb (byte 8 i) val)))
+            #+big-endian
+            (loop for i from (- sb-vm:n-word-bits 8) downto 0 by 8
+                  do (emit-byte segment (ldb (byte 8 i) val)))))
+     (dolist (val vals)
+       (cond ((label-p val)
+              ;; note a fixup prior to writing the backpatch so that the fixup's
+              ;; position is the location counter at the patch point
+              ;; (i.e. prior to skipping 8 bytes)
+              ;; This fixup is *not* recorded in code->fixups. Instead, trans_code()
+              ;; will fixup a counted initial subsequence of unboxed words.
+              ;; Q: why are fixup notes a "compiler" abstractions?
+              ;; They seem pretty assembler-related to me.
+              (sb-c:note-fixup segment (or #+64-bit :absolute64 :absolute)
+                               (sb-c:make-fixup nil :code-object 0))
+              (emit-back-patch
+               segment
+               sb-vm:n-word-bytes
+               (let ((val val)) ; capture the current label
+                 (lambda (segment posn)
+                   (declare (ignore posn)) ; don't care where the fixup itself is
+                   (emit-bytes segment
+                               (+ (sb-c:component-header-length)
+                                  (- (segment-header-skew segment))
+                                  (- sb-vm:other-pointer-lowtag)
+                                  (label-position val)))))))
+             (t
+              (emit-bytes segment val)))))))
+
+;;;; Peephole pass
+
+(defmacro defpattern (name (opcodes1 opcodes2) lambda-list &body body)
+  `(%defpattern ,name ',opcodes1 ',opcodes2 (lambda ,lambda-list ,@body)))
+
+(defparameter *show-peephole-transforms-p* nil)
+(defglobal *asm-pattern-matchers* nil)
+(defglobal *asm-pattern-matchers-invoked* (make-array 20 :initial-element 0))
+(defun %defpattern (name opcodes1 opcodes2 applicator)
+  (let ((entry (find name *asm-pattern-matchers* :test #'string= :key #'fifth)))
+    (if entry
+        (setf (first entry) opcodes1
+              (second entry) opcodes2
+              (third entry) applicator)
+        (let* ((index (length *asm-pattern-matchers*))
+               (entry (list opcodes1 opcodes2  applicator index name)))
+          (push entry *asm-pattern-matchers*)))))
+
+(defun combine-instructions (section)
+  ;; Triply nested loop:
+  ;;   - repeatedly scan until no further changes
+  ;;   -   looking for a pattern that starts at each instruction
+  ;;   -      for all possible rules that match on opcodes
+  ;; This is a greedy algorithm, it could do the wrong thing
+  ;; by applying rules that make other rules impossible to apply,
+  ;; but that seems unlikely.
+  (loop
+    (let* ((any-changes)
+           (stmt nil)
+           (next (section-start section)))
+      (loop
+        (setq stmt next next (stmt-next stmt))
+        (unless next (return))
+        ;; All the patterns examine exactly 2 instructions for now.
+        ;; It should be possible to create a pattern that matches a sequence
+        ;; of 3 or more instruction or has intervening random stuff
+        ;; (e.g. "MOV reg, ea" + ? + "CMP reg, val") provided that the "?"
+        ;; does not interact with instructions around it.
+        (unless (labeled-statement-p next)
+          (let ((op (stmt-mnemonic stmt))
+                (next-op (stmt-mnemonic next)))
+            ;; Look for a rule that can be applied
+            (dolist (rule *asm-pattern-matchers*)
+              (destructuring-bind (opcodes1 opcodes2 . action) rule
+                ;; Don't return from the innermost loop until finding a rule that accepts
+                ;; the statement. If the match on opcodes alone is deemed a hit, but the
+                ;; rule fails, we would not try other rules that could have applied.
+                (when (and (member op opcodes1) (member next-op opcodes2))
+                  (let ((new-next (funcall (car action) stmt next)))
+                    (when new-next
+                      (incf (aref *asm-pattern-matchers-invoked* (cadr action)))
+                      (when *show-peephole-transforms-p*
+                        (format t "~&applied ~a~%" (caddr action)))
+                      ;; The rule returns any non-deleted statement. It could be any
+                      ;; line of the pattern. Skip backwards to ensure that we see
+                      ;; patterns with next's predecessor as the first instruction.
+                      (setq next (stmt-prev new-next)
+                            any-changes t)
+                      (return)))))))))
+      (unless any-changes (return)))))

@@ -74,6 +74,10 @@
   (/show "testing '/SHOW" *print-length* *print-level*) ; show anything
   (unless (!c-runtime-noinform-p)
     (write-string "COLD-INIT... "))
+  ;; Establish **initial-handler-clusters**
+  (show-and-call sb-kernel::!target-error-cold-init)
+  ;; And now *CURRENT-THREAD* and *HANDLER-CLUSTERS*
+  (sb-thread::init-initial-thread)
 
   ;; Assert that FBOUNDP doesn't choke when its answer is NIL.
   ;; It was fine if T because in that case the legality of the arg is certain.
@@ -83,13 +87,7 @@
   ;; Anyone might call RANDOM to initialize a hash value or something;
   ;; and there's nothing which needs to be initialized in order for
   ;; this to be initialized, so we initialize it right away.
-  ;; Indeed, INIT-INITIAL-THREAD needs a random number.
   (show-and-call !random-cold-init)
-
-  ;; Ensure that *CURRENT-THREAD* and *HANDLER-CLUSTERS* have sane values.
-  ;; create_thread_struct() assigned NIL/unbound-marker respectively.
-  (sb-thread::init-initial-thread)
-  (show-and-call sb-kernel::!target-error-cold-init)
 
   ;; Putting data in a synchronized hashtable (*PACKAGE-NAMES*)
   ;; requires that the main thread be properly initialized.
@@ -97,7 +95,7 @@
   ;; Printing of symbols requires that packages be filled in, because
   ;; OUTPUT-SYMBOL calls FIND-SYMBOL to determine accessibility.
   (show-and-call !package-cold-init)
-  (setq *print-pprint-dispatch* (sb-pretty::make-pprint-dispatch-table))
+  (setq *print-pprint-dispatch* (sb-pretty::make-pprint-dispatch-table nil nil nil))
   ;; Because L-T-V forms have not executed, CHOOSE-SYMBOL-OUT-FUN doesn't work.
   (setf (symbol-function 'choose-symbol-out-fun)
         (lambda (&rest args) (declare (ignore args)) #'output-preserve-symbol))
@@ -350,12 +348,12 @@ process to continue normally."
   (setf sb-alien::*default-c-string-external-format* nil)
   ;; WITHOUT-GCING implies WITHOUT-INTERRUPTS.
   (without-gcing
-    (finalizers-reinit)
-    ;; Create *CURRENT-THREAD* first, since initializing a stream calls
-    ;; ALLOC-BUFFER which calls FINALIZE which acquires **FINALIZER-STORE-LOCK**
-    ;; which needs a valid thread in order to grab a mutex.
+    ;; Until *CURRENT-THREAD* has been set, nothing the slightest bit complicated
+    ;; can be called, as pretty much anything can assume that it is set.
     (sb-thread::init-initial-thread)
-    ;; Initialize streams first, so that any errors can be printed later
+    ;; Initializing the standard streams calls ALLOC-BUFFER which calls FINALIZE
+    (finalizers-reinit)
+    ;; Initialize streams next, so that any errors can be printed
     (stream-reinit t)
     (os-cold-init-or-reinit)
     (thread-init-or-reinit)

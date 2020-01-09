@@ -34,7 +34,7 @@
                 #:seg-virtual-location #:seg-length #:seg-sap-maker
                 #:map-segment-instructions #:inst-name
                 #:dstate-next-addr #:dstate-cur-offs)
-  (:import-from "SB-X86-64-ASM" #:near-jump-displacement #:mov #:|call|
+  (:import-from "SB-X86-64-ASM" #:near-jump-displacement #:mov #:call
                 #:get-gpr #:reg-name)
   (:import-from "SB-IMPL" #:package-hashtable #:package-%name
                 #:package-hashtable-cells
@@ -823,7 +823,7 @@
          (max-end 0))
     ;; There is *always* at least 1 word of unboxed data now
     (aver (eq (caar ranges) :data))
-    (let ((jump-table-size (sap-ref-word text-sap 0))
+    (let ((jump-table-size (code-jump-table-words code))
           (total-nwords (cdr (pop ranges))))
       (cond ((> jump-table-size 1)
              (format output "# jump table~%")
@@ -907,7 +907,7 @@
           (total-code-size 0)
           (pp-state (cons (make-hash-table :test 'equal)
                           ;; copy no entries for macros/special-operators (flet, etc)
-                          (sb-pretty::make-pprint-dispatch-table)))
+                          (sb-pretty::make-pprint-dispatch-table nil nil nil)))
           (prev-namestring "")
           (n-linker-relocs 0)
           (seen-fdefns nil)

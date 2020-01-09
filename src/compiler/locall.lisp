@@ -195,13 +195,10 @@
           (declare (type index ,n-supplied)
                    (ignorable ,n-supplied))
           (cond
-            ,@(loop for previous-n = (1- min) then n
-                    for ((ep . n) . next) on used-eps
+            ,@(loop for ((ep . n) . next) on used-eps
                     collect
                     (cond (next
-                           `(,(if (= (1+ previous-n) n)
-                                  `(eql ,n-supplied ,n)
-                                  `(<= ,n-supplied ,n))
+                           `((eq ,n-supplied ,n)
                              (%funcall ,ep ,@(subseq temps 0 n))))
                           (more
                            (with-unique-names (n-context n-count)
@@ -1125,8 +1122,8 @@
 ;;; Actually do LET conversion. We call subfunctions to do most of the
 ;;; work. We do REOPTIMIZE-LVAR on the args and CALL's lvar so that
 ;;; LET-specific IR1 optimizations get a chance. We blow away any
-;;; entry for the function in *FREE-FUNS* so that nobody will create
-;;; new references to it.
+;;; entry for the function in (FREE-FUNS *IR1-NAMSPACE*) so that nobody
+;;; will create new references to it.
 (defun let-convert (fun call)
   (declare (type clambda fun) (type basic-combination call))
   (let* ((next-block (insert-let-body fun call))

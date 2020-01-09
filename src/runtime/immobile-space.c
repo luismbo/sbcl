@@ -462,7 +462,7 @@ enliven_immobile_obj(lispobj *ptr, int rescan) // a native pointer
 /* If 'addr' points to an immobile object, then make the object
    live by promotion. But if the object is not in the generation
    being collected, do nothing */
-void immobile_space_preserve_pointer(void* addr)
+boolean immobile_space_preserve_pointer(void* addr)
 {
     unsigned char genmask = compacting_p() ? 1<<from_space : 0xff;
     lispobj* object_start;
@@ -496,7 +496,9 @@ void immobile_space_preserve_pointer(void* addr)
             && (lispobj*)addr < object_start + fixedobj_page_obj_size(page_index)
             && (properly_tagged_descriptor_p(addr, object_start)
                 || widetag_of(object_start) == FUNCALLABLE_INSTANCE_WIDETAG);
-    } else return;
+    } else {
+      return 0;
+    }
     if (valid && (!compacting_p() ||
                   __immobile_obj_gen_bits(object_start) == from_space)) {
         dprintf((logfile,"immobile obj @ %p (<- %p) is conservatively live\n",
@@ -505,7 +507,9 @@ void immobile_space_preserve_pointer(void* addr)
             enliven_immobile_obj(object_start, 0);
         else
             gc_mark_obj(compute_lispobj(object_start));
+        return 1;
     }
+    return 0;
 }
 
 // Loop over the newly-live objects, scavenging them for pointers.
@@ -1340,14 +1344,12 @@ int* code_component_order;
  * 'coreparse' causes all pages in dynamic space to be pseudo-static, but
  * each immobile object stores its own generation, so this must be done at
  * save time, or else it would require touching every object on startup */
-void prepare_immobile_space_for_save(lispobj init_function, boolean verbose)
+void prepare_immobile_space_for_save(boolean verbose)
 {
     if (verbose) {
         printf("[defragmenting immobile space... ");
         fflush(stdout);
     }
-    // Assert that defrag will not move the init_function
-    gc_assert(!immobile_space_p(init_function));
     defrag_immobile_space(verbose);
 
     lispobj* obj = (lispobj*)FIXEDOBJ_SPACE_START;
@@ -2065,9 +2067,8 @@ static void defrag_immobile_space(boolean verbose)
                     {
                     // Fix any absolute jump tables
                     lispobj* jump_table =
-                        (lispobj*)code_text_start((struct code*)
-                                                  tempspace_addr((void*)new_vaddr));
-                    int count = *jump_table;
+                        code_jumptable_start((struct code*)tempspace_addr((void*)new_vaddr));
+                    int count = jumptable_count(jump_table);
                     int i;
                     for (i = 1; i < count; ++i)
                         if (jump_table[i]) jump_table[i] += displacement;

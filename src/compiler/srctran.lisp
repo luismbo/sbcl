@@ -625,7 +625,8 @@
 (defun type-approximate-interval (type)
   (declare (type ctype type))
   (let ((types (prepare-arg-for-derive-type type))
-        (result nil))
+        (result nil)
+        complex)
     (dolist (type types)
       (let ((type (typecase type
                     (member-type type
@@ -636,13 +637,15 @@
                     (t
                      type))))
         (unless (numeric-type-p type)
-          (return-from type-approximate-interval nil))
+          (return-from type-approximate-interval (values nil nil)))
         (let ((interval (numeric-type->interval type)))
+          (when (eq (numeric-type-complexp type) :complex)
+            (setf complex t))
           (setq result
                 (if result
                     (interval-approximate-union result interval)
                     interval)))))
-    result))
+    (values result complex)))
 
 (defun copy-interval-limit (limit)
   (if (numberp limit)
@@ -3470,8 +3473,20 @@
                                           (eq (constraint-y con) leaf2))
                                      (and (eq (constraint-x con) leaf2)
                                           (eq (constraint-y con) leaf1))))
-                       return con)))
-          (find-constraint ref1))))))
+                       return con))
+               (has-sets (leaf)
+                 (and (lambda-var-p leaf)
+                      (lambda-var-sets leaf))))
+          (let ((ref1-con (find-constraint ref1)))
+            (when (and ref1-con
+                       ;; If the variables are set both references
+                       ;; need to have the same constraint, otherwise
+                       ;; one the references may be done before the
+                       ;; set.
+                       (or (and (not (has-sets leaf1))
+                                (not (has-sets leaf2)))
+                           (eq ref1-con (find-constraint ref2))))
+              ref1-con)))))))
 
 ;;; If X and Y are the same leaf, then the result is true. Otherwise,
 ;;; if there is no intersection between the types of the arguments,
@@ -3883,21 +3898,28 @@
                                  '((and (not (maybe-float-lvar-p x))
                                         (not (maybe-float-lvar-p y))))))
                     ,reflexive-p
-                    (let ((ix (or (type-approximate-interval (lvar-type x))
-                                  (give-up-ir1-transform)))
-                          (iy (or (type-approximate-interval (lvar-type y))
-                                  (give-up-ir1-transform))))
-                      (cond (,surely-true
-                             t)
-                            (,surely-false
-                             nil)
-                            ((and (constant-lvar-p x)
-                                  (not (constant-lvar-p y)))
-                             `(,',inverse y x))
-                            (t
-                             (give-up-ir1-transform))))))))
+                    (multiple-value-bind (ix x-complex)
+                        (type-approximate-interval (lvar-type x))
+                      (unless ix
+                        (give-up-ir1-transform))
+                      (multiple-value-bind (iy y-complex)
+                          (type-approximate-interval (lvar-type y))
+                        (unless iy
+                          (give-up-ir1-transform))
+                        (cond ((and (or (not x-complex)
+                                        (interval-contains-p 0 ix))
+                                    (or (not y-complex)
+                                        (interval-contains-p 0 iy))
+                                    ,surely-true)
+                               t)
+                              (,surely-false
+                               nil)
+                              ((and (constant-lvar-p x)
+                                    (not (constant-lvar-p y)))
+                               `(,',inverse y x))
+                              (t
+                               (give-up-ir1-transform)))))))))
   (def = = t (interval-= ix iy) (interval-/= ix iy))
-  (def /= /= nil (interval-/= ix iy) (interval-= ix iy))
   (def < > nil (interval-< ix iy) (interval->= ix iy))
   (def > < nil (interval-< iy ix) (interval->= iy ix))
   (def <= >= t (interval->= iy ix) (interval-< iy ix))
@@ -5091,8 +5113,8 @@
                (check-deprecated-thing 'variable symbol)
                (case state
                  ((:early :late)
-                  (unless (gethash symbol *free-vars*)
-                    (setf (gethash symbol *free-vars*) :deprecated)))))
+                  (unless (gethash symbol (free-vars *ir1-namespace*))
+                    (setf (gethash symbol (free-vars *ir1-namespace*)) :deprecated)))))
              ;; :global in the test below is redundant if match-kind is :global
              ;; but it's harmless and a convenient way to express this.
              ;; Note that some 3rd-party libraries use variations on DEFCONSTANT

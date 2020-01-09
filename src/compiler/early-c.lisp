@@ -24,6 +24,7 @@
                        (:copier nil)
                        (:predicate opaque-box-p))
   value)
+(declaim (freeze-type opaque-box))
 
 ;;; ANSI limits on compilation
 (defconstant sb-xc:call-arguments-limit sb-xc:most-positive-fixnum
@@ -86,19 +87,22 @@
                           (:predicate nil)
                           (:copier nil))
   (expansion nil :read-only t))
+(declaim (freeze-type dxable-args))
 
-;;; *FREE-VARS* translates from the names of variables referenced
-;;; globally to the LEAF structures for them. *FREE-FUNS* is like
-;;; *FREE-VARS*, only it deals with function names.
-(defvar *free-vars*)
-(defvar *free-funs*)
-(declaim (type hash-table *free-vars* *free-funs*))
+(defstruct (ir1-namespace (:conc-name "") (:copier nil) (:predicate nil))
+  ;; FREE-VARS translates from the names of variables referenced
+  ;; globally to the LEAF structures for them.
+  (free-vars (make-hash-table :test 'eq) :read-only t :type hash-table)
+  ;; FREE-FUNS is like FREE-VARS, only it deals with function names.
+  (free-funs (make-hash-table :test 'equal) :read-only t :type hash-table)
+  ;; We use the same CONSTANT structure to represent all equal anonymous
+  ;; constants. This hashtable translates from constants to the LEAFs that
+  ;; represent them.
+  (constants (make-hash-table :test 'equal) :read-only t :type hash-table))
+(declaim (freeze-type ir1-namespace))
 
-;;; We use the same CONSTANT structure to represent all equal anonymous
-;;; constants. This hashtable translates from constants to the LEAFs that
-;;; represent them.
-(defvar *constants*)
-(declaim (type hash-table *constants*))
+(sb-impl::define-thread-local *ir1-namespace*)
+(declaim (type ir1-namespace *ir1-namespace*))
 
 ;;; *ALLOW-INSTRUMENTING* controls whether we should allow the
 ;;; insertion of instrumenting code (like a (CATCH ...)) around code
@@ -116,7 +120,9 @@
 (defvar *compiler-note-count*)
 ;;; Bind this to a stream to capture various internal debugging output.
 (defvar *compiler-trace-output* nil)
-(defvar *compile-trace-targets* '(:ir1 :ir2 :vop :disassemble))
+;;; These are the default, but the list can also include
+;;; :pre-ir2-optimize and :symbolic-asm.
+(defvar *compile-trace-targets* '(:ir1 :ir2 :vop :symbolic-asm :disassemble))
 (defvar *constraint-universe*)
 (defvar *current-path*)
 (defvar *current-component*)
@@ -156,18 +162,6 @@ the stack without triggering overflow protection.")
 (defmacro with-world-lock (() &body body)
   #+sb-xc-host `(progn ,@body)
   #-sb-xc-host `(sb-thread:with-recursive-lock (**world-lock**) ,@body))
-
-;;; unique ID for the next object created (to let us track object
-;;; identity even across GC, useful for understanding weird compiler
-;;; bugs where something is supposed to be unique but is instead
-;;; exists as duplicate objects)
-#+sb-show
-(progn
-  (defvar *object-id-counter* 0)
-  (defun new-object-id ()
-    (prog1
-        *object-id-counter*
-      (incf *object-id-counter*))))
 
 ;;;; miscellaneous utilities
 
@@ -195,6 +189,7 @@ the stack without triggering overflow protection.")
   ;; where this thing was used. Note that we only record the first
   ;; *UNDEFINED-WARNING-LIMIT* calls.
   (warnings () :type list))
+(declaim (freeze-type undefined-warning))
 
 ;;; Delete any undefined warnings for NAME and KIND. This is for the
 ;;; benefit of the compiler, but it's sometimes called from stuff like
@@ -346,6 +341,14 @@ the stack without triggering overflow protection.")
     (list (make-hash-table :test 'equal :synchronized t)))
   (declaim (type (cons hash-table) *code-coverage-info*)))
 
+(deftype id-array ()
+  '(and (array t (*))
+        ;; Might as well be as specific as we can.
+        ;; Really it should be (satisfies array-has-fill-pointer-p)
+        ;; but that predicate is not total (errors on NIL).
+        ;; And who knows what the host considers "simple".
+        #-sb-xc-host (not simple-array)))
+
 (defstruct (compilation (:copier nil)
                         (:predicate nil)
                         (:conc-name ""))
@@ -353,19 +356,6 @@ the stack without triggering overflow protection.")
   (coverage-metadata nil :type (or (cons hash-table hash-table) null) :read-only t)
   (msan-unpoison nil :read-only t)
   (sset-counter 1 :type fixnum)
-  ;; Bidrectional map between IR1/IR2/assembler abstractions
-  ;; and a corresponding small integer identifier. One direction could be done
-  ;; by adding the integer ID as an object slot, but we want both directions.
-  ;; These could just as well be scoped by WITH-IR1-NAMESPACE, but
-  ;; since it's primarily a debugging tool, it's nicer to have
-  ;; a wider unique scope by ID.
-  (objmap-obj-to-id   (make-hash-table :test 'eq) :read-only t)
-  (objmap-id-to-cont  (make-array 10) :type simple-vector) ; number -> CTRAN or LVAR
-  (objmap-id-to-tn    (make-array 10) :type simple-vector) ; number -> TN
-  (objmap-id-to-label (make-array 10) :type simple-vector) ; number -> LABEL
-  (objmap-cont-num    0 :type fixnum)
-  (objmap-tn-id       0 :type fixnum)
-  (objmap-label-id    0 :type fixnum)
   ;; if emitting a cfasl, the fasl stream to that
   (compile-toplevel-object nil :read-only t)
   ;; these are all historical baggage from here down,
@@ -373,9 +363,26 @@ the stack without triggering overflow protection.")
   (block-compile nil :type (member nil t :specified))
   ;; When block compiling, used by PROCESS-FORM to accumulate top level
   ;; lambdas resulting from compiling subforms. (In reverse order.)
-  (toplevel-lambdas nil :type list))
+  (toplevel-lambdas nil :type list)
 
-(defvar *compilation*)
+  ;; Bidrectional map between IR1/IR2/assembler abstractions and a corresponding
+  ;; small integer or string identifier. One direction could be done by adding
+  ;; the ID as slot to each object, but we want both directions.
+  ;; These could just as well be scoped by WITH-IR1-NAMESPACE, but
+  ;; since it's primarily a debugging tool, it's nicer to have
+  ;; a wider unique scope by ID.
+  (objmap-obj-to-id      (make-hash-table :test 'eq) :read-only t)
+  (objmap-id-to-node     nil :type (or null id-array)) ; number -> NODE
+  (objmap-id-to-comp     nil :type (or null id-array)) ; number -> COMPONENT
+  (objmap-id-to-leaf     nil :type (or null id-array)) ; number -> LEAF
+  (objmap-id-to-cont     nil :type (or null id-array)) ; number -> CTRAN or LVAR
+  (objmap-id-to-ir2block nil :type (or null id-array)) ; number -> IR2-BLOCK
+  (objmap-id-to-tn       nil :type (or null id-array)) ; number -> TN
+  (objmap-id-to-label    nil :type (or null id-array)) ; number -> LABEL
+  )
+(declaim (freeze-type compilation))
+
+(sb-impl::define-thread-local *compilation*)
 (declaim (type compilation *compilation*))
 
 (in-package "SB-ALIEN")

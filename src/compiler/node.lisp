@@ -176,8 +176,6 @@
                             (number (when (boundp '*compilation*)
                                       (incf (sset-counter *compilation*)))))
                   (:copier nil))
-  ;; unique ID for debugging
-  #+sb-show (id (new-object-id) :read-only t)
   ;; True if this node needs to be optimized. This is set to true
   ;; whenever something changes about the value of an lvar whose DEST
   ;; is this node.
@@ -438,9 +436,9 @@
                         (head
                          tail &aux
                          (last-block tail)
-                         (outer-loop (make-loop :kind :outer :head head)))))
-  ;; unique ID for debugging
-  #+sb-show (id (new-object-id) :read-only t)
+                         (outer-loop (make-loop :kind :outer
+                                                :head head
+                                                :tail (list tail))))))
   ;; space where this component will be allocated in
   ;; :auto won't make any codegen optimizations pertinent to immobile space,
   ;; but will place the code there given sufficient available space.
@@ -733,8 +731,6 @@
                                       (incf (sset-counter *compilation*)))))
                   (:copier nil)
                   (:constructor nil))
-  ;; unique ID for debugging
-  #+sb-show (id (new-object-id) :read-only t)
   ;; (For public access to this slot, use LEAF-SOURCE-NAME.)
   ;;
   ;; the name of LEAF as it appears in the source, e.g. 'FOO or '(SETF
@@ -1612,6 +1608,9 @@
   #+sb-show id
   (entry :test entry)
   (value :test value))
+
+(def!struct (no-op (:include node)
+                   (:copier nil)))
 
 ;;; a helper for the POLICY macro, defined late here so that the
 ;;; various type tests can be inlined

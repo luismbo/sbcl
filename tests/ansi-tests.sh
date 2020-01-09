@@ -1,7 +1,7 @@
 #!/bin/sh -e
 
 if [ ! -e ansi-test ]; then
-   git clone https://github.com/sbcl/ansi-test.git
+   git clone --depth 1 https://github.com/sbcl/ansi-test.git
 fi
 
 cd ansi-test
@@ -18,7 +18,7 @@ cd ansi-test
  "FORMAT.B.29" "FORMAT.D.27" "FORMAT.D.28" "FORMAT.D.29" "FORMAT.F.45"
  "FORMAT.F.46" "FORMAT.F.46B" "FORMAT.F.5" "FORMAT.F.8" "FORMAT.O.27"
  "FORMAT.O.28" "FORMAT.O.29" "FORMAT.R.37" "FORMAT.R.38" "FORMAT.S.29"
- "FORMAT.E.1" "FORMAT.E.2" "FORMAT.E.26"
+ "FORMAT.E.1" "FORMAT.E.2"
  "FORMAT.X.27" "FORMAT.X.28" "FORMAT.X.29" "FORMATTER.A.57" "FORMATTER.A.58"
  "FORMATTER.B.27" "FORMATTER.B.28" "FORMATTER.B.29" "FORMATTER.D.27"
  "FORMATTER.D.28" "FORMATTER.D.29" "FORMATTER.F.45" "FORMATTER.F.46"
@@ -39,15 +39,18 @@ cd ansi-test
  "READTABLE-CASE.CASE-PRESERVE" "READTABLE-CASE.CASE-UPCASE" "SHIFTF.7"
  "SUBTYPEP-COMPLEX.8" "SUBTYPEP.CONS.38" "SUBTYPEP.CONS.41" "SUBTYPEP.CONS.43"
  "SUBTYPEP.EQL.1" "SUBTYPEP.EQL.2" "SUBTYPEP.MEMBER.17" "SUBTYPEP.MEMBER.18"
- "SXHASH.17" "SXHASH.18" "SXHASH.19" "TYPE-OF.1" 
+ "SXHASH.17" "SXHASH.18" "SXHASH.19" "TYPE-OF.1"
+ #+x86 (list "ACOSH.3" "SQRT.4")
 #+win32 (list "ASINH.1" "ASINH.2" "ASINH.3" "ASINH.7" "ACOSH.3" "EXP.ERROR.7"
          "EXPT.ERROR.4" "EXPT.ERROR.5" "EXPT.ERROR.6" "EXPT.ERROR.7"
                    "PROBE-FILE.4" "OPEN.OUTPUT.23" "OPEN.IO.22" "OPEN.IO.23")
- #-win32 nil))
-                         (failing (mapcar (function string) regression-test:*failed-tests*))
+ #-(or win32 x86) nil))
+                         (failing (remove "FORMAT.E.26"
+                                          (mapcar (function string) regression-test:*failed-tests*)
+                                          :test (function equal)))
                          (diff1 (set-difference failing  expected :test (function equal)))
                          (diff2 (set-difference expected failing :test (function equal))))
    (cond ((or diff1 diff2)
            (format t "Difference ~@[added ~a~] ~@[removed ~a~]~%" diff1 diff2)
-           (exit :code 1)) 
+           (exit :code 1))
          ((exit))))'

@@ -524,12 +524,18 @@
                     (if (oddp header) :immobile :dynamic)
                     (align-up n-boxed-words sb-c::code-boxed-words-align)
                     n-code-bytes)))
-        (setf (%code-debug-info code) (svref stack debug-info-index))
         (loop for i of-type index from sb-vm:code-constants-offset
               for j of-type index from ptr below debug-info-index
               do (setf (code-header-ref code i) (svref stack j)))
         (with-pinned-objects (code)
+          ;; * DO * NOT * SEPARATE * THESE * STEPS *
+          ;; For a full explanation, refer to the comment above MAKE-CORE-COMPONENT
+          ;; concerning the corresponding use therein of WITH-PINNED-OBJECTS etc.
           (read-n-bytes (fasl-input-stream) (code-instructions code) 0 n-code-bytes)
+          (sb-thread:barrier (:write))
+          ;; Assign debug-info last. A code object that has no debug-info will never
+          ;; have its fun table accessed in conservative_root_p() or pin_object().
+          (setf (%code-debug-info code) (svref stack debug-info-index))
           (sb-c::apply-fasl-fixups stack code n-fixups))
         #-sb-xc-host
         (when (typep (code-header-ref code (1- n-boxed-words))
@@ -616,14 +622,19 @@
                                                          (cadr spec)))
                                           (find-layout ',(cadr spec))))
                           specs))))
-  (frob (#x6c t)
-        (#x6d structure-object)
-        (#x6e condition)
-        (#x6f definition-source-location)
-        (#x70 sb-c::debug-fun)
-        (#x71 sb-c::compiled-debug-fun)
-        (#x72 sb-c::debug-info)
-        (#x73 sb-c::compiled-debug-info)
-        (#x74 sb-c::debug-source)
-        (#x75 defstruct-description)
-        (#x76 defstruct-slot-description)))
+  (frob (#x68 t)
+        (#x69 structure-object)
+        (#x6a condition)
+        (#x6b definition-source-location)
+        (#x6c sb-c::debug-info)
+        (#x6d sb-c::compiled-debug-info)
+        (#x6e sb-c::debug-source)
+        (#x6f defstruct-description)
+        (#x70 defstruct-slot-description)
+        (#x71 sb-c::debug-fun)
+        (#x72 sb-c::compiled-debug-fun)
+        (#x73 sb-c::compiled-debug-fun-optional)
+        (#x74 sb-c::compiled-debug-fun-more)
+        (#x75 sb-c::compiled-debug-fun-external)
+        (#x76 sb-c::compiled-debug-fun-toplevel)
+        (#x77 sb-c::compiled-debug-fun-cleanup)))

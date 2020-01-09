@@ -565,7 +565,9 @@ The following options are defined:
 :CONDITION, :BREAK and :PRINT forms are evaluated in a context which
 mocks up the lexical environment of the called function, so that
 SB-DEBUG:VAR and SB-DEBUG:ARG can be used.
-The -AFTER and -ALL forms can use SB-DEBUG:ARG."
+The -AFTER and -ALL forms can use also use SB-DEBUG:ARG. In forms
+which are evaluated after the function call, (SB-DEBUG:ARG N) returns
+the N-th value returned by the function."
   (if specs
       (expand-trace specs)
       '(%list-traced-funs)))
@@ -668,7 +670,7 @@ functions when called with no arguments."
            (let ((c (fun-code-header
                      ;; Immobile code might use relative fixups which won't work
                      ;; when the code gets copied.
-                     (let ((sb-c::*compile-to-memory-space* :dynamic))
+                     (let ((sb-c:*compile-to-memory-space* :dynamic))
                        (compile nil
                                 `(lambda (&rest args)
                                    ;; The code constants will be overwritten in the copy.

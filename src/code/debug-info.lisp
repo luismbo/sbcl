@@ -131,7 +131,9 @@
   ;; (because it doesn't transform correctly under package renaming).
   ;; Check whether this slot's data might have the same problem that
   ;; that slot's data did.
-  (blocks nil :type (or (simple-array (unsigned-byte 8) (*)) null))
+  (blocks nil :type (or (simple-array (unsigned-byte 8) (*))
+                        (simple-array (signed-byte 8) (*))
+                        null))
   ;; a vector describing the variables that the argument values are
   ;; stored in within this function. The locations are represented by
   ;; the ordinal number of the entry in the VARIABLES slot value. The
@@ -280,6 +282,8 @@
     #-fp-and-pc-standard-save compiled-debug-fun-cfp-saved-pc
     #+unwind-to-frame-and-call-vop compiled-debug-fun-bsp-save))
 
+;;; If you add more subtypes here, be sure to amend the set of
+;;; predefined layout FOP codes in src/code/fop
 (def!struct (compiled-debug-fun-optional (:include compiled-debug-fun)
                                          #-sb-xc-host (:pure t)
                                          (:copier nil)
@@ -384,8 +388,6 @@
   ;; the universal time that the source was written, or NIL if
   ;; unavailable
   (created nil :type (or unsigned-byte null))
-  ;; the universal time that the source was compiled
-  (compiled (missing-arg) :type unsigned-byte)
   ;; Additional information from (WITH-COMPILATION-UNIT (:SOURCE-PLIST ...))
   (plist *source-plist* :read-only t))
 (def!struct (core-debug-source #-sb-xc-host (:pure t)
@@ -487,8 +489,6 @@
                               (print-unreadable-object
                                   (s stream :type t :identity t))))
              (:copier nil))
-  ;; the UT that compilation started at
-  (start-time (get-universal-time) :type unsigned-byte :read-only t)
   ;; the IRT that compilation started at
   (start-real-time (get-internal-real-time) :type unsigned-byte :read-only t)
   ;; the FILE-INFO structure for this compilation

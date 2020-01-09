@@ -1,5 +1,74 @@
 ;;; Do warm init without compiling files.
 
+;;; Get back to a reasonable state where all of the compiler works,
+;;; as does SB-VM:HEXDUMP and MAP-ALLOCATED-OBJECTS, etc.
+;;; before trying to define any more functions.
+(defvar *compile-files-p* nil)
+(load (merge-pathnames "src/cold/warm.lisp" *load-pathname*))
+
+;;; Remove symbols from CL:*FEATURES* that should not be exposed to users.
+(export 'sb-impl::+internal-features+ 'sb-impl)
+(let* ((non-target-features
+        '(;; :SB-AFTER-XC-CORE is essentially an option flag to make-host-2
+          :SB-AFTER-XC-CORE
+          ;; CONS-PROFILING sets the initial compiler policy which persists
+          ;; into the default baseline policy. It has no relevance post-build
+          ;; in as much as policy can be changed later arbitrarily.
+          :CONS-PROFILING
+          ;; Uses of OS-PROVIDES-DLOPEN and -DLADDR are confined to src/code/foreign.lisp
+          :OS-PROVIDES-DLOPEN :OS-PROVIDES-DLADDR
+          ;; more-or-less confined to serve-event, except for a test which now
+          ;; detects whether COMPUTE-POLLFDS is defined and therefore testable.
+          :OS-PROVIDES-POLL
+          ;; The final batch of symbols is strictly for C. The prefix of
+          ;; "LISP_FEATURE_" on the corresponding #define is unfortunate.
+          :GCC-TLS
+          :RESTORE-FS-SEGMENT-REGISTER-FROM-TLS ; only for 'src/runtime/thread.h'
+          :OS-PROVIDES-BLKSIZE-T ; only for 'src/runtime/wrap.h'
+          :OS-PROVIDES-PUTWC ; only for 'src/runtime/backtrace.c'
+          ))
+       (public-features
+        (cons
+         sb-impl::!sbcl-architecture
+         '(:COMMON-LISP :SBCL :ANSI-CL :IEEE-FLOATING-POINT
+           :64-BIT ; choice of word size. 32-bit if absent
+           :BIG-ENDIAN :LITTLE-ENDIAN ; endianness: pick one and only one
+           :BSD :UNIX :LINUX :WIN32 :DARWIN :SUNOS :ANDROID ; OS: pick one or more
+           :MACH-O :ELF ; obj file format: pick zero or one
+           ;; I would argue that this should not be exposed,
+           ;; but I would also anticipate blowblack from removing it.
+           :CHENEYGC :GENCGC ; GC: pick one and only one
+           ;; This really should not exist. For any one architecture, if it supports
+           ;; :linkage-table (which almost all do), then it should support dynamic-core,
+           ;; and we should build with both, which is to say that dynamic-core is not
+           ;; an additional yes/no choice.
+           :SB-DYNAMIC-CORE
+           ;; Can't use s-l-a-d :compression safely without it
+           :SB-CORE-COMPRESSION
+           ;; Features that are also in *features-potentially-affecting-fasl-format*
+           ;; and would probably mess up something if made non-public,
+           ;; though I don't think they should all be public.
+           :SB-SAFEPOINT :SB-SAFEPOINT-STRICTLY
+           :SB-THREAD :SB-UNICODE
+           ;; Things which (I think) at least one person has requested be kept around
+           :SB-LDB
+           ;; Features which are public and "potentially affect" fasl format,
+           ;; though in practice they don't because every build has them.
+           ;; And/or at least one person has requested be kept around.
+           :SB-PACKAGE-LOCKS
+           ;; unsure, I think this is for end-user consumption,
+           ;; though every release of SBCL since eons ago has had local nicknames.
+           :PACKAGE-LOCAL-NICKNAMES
+           ;; Developer mode features. A release build will never have them,
+           ;; hence it makes no difference whether they're public or not.
+           :SB-FLUID :SB-DEVEL)))
+       (removable-features
+        (append non-target-features public-features)))
+  (defconstant sb-impl:+internal-features+
+    (remove-if (lambda (x) (member x removable-features)) *features*))
+  (setq *features* (remove-if-not (lambda (x) (member x public-features))
+                                  *features*)))
+
 ;;; There's a fair amount of machinery which is needed only at cold
 ;;; init time, and should be discarded before freezing the final
 ;;; system. We discard it by uninterning the associated symbols.
@@ -68,6 +137,7 @@
                 (fmakunbound symbol)
                 (unintern symbol package))))))
   (sb-int:dohash ((k v) sb-c::*backend-parsed-vops*)
+    (declare (ignore k))
     (setf (sb-c::vop-parse-body v) nil))
   result)
 
@@ -104,27 +174,25 @@
           (format t "Found string ~S~%" (weak-pointer-value wp)))
         (warn "Potential problem with format-control strings.
 Please check that all strings which were not recognizable to the compiler
-(as the first argument to WARN, etc.) are wrapped in SB-FORMAT:TOKENS")
-        ;; This is for display only, I don't check the result.
-        ;; NOTE: this symbol doesn't become external until after fasload.
-        #+gencgc (when (fboundp 'sb-ext::search-roots)
-                   (sb-ext::search-roots wps :static)))
+(as the first argument to WARN, etc.) are wrapped in SB-FORMAT:TOKENS"))
       wps)))
 
 (progn
-  (defvar *compile-files-p* nil)
-  "about to LOAD warm.lisp (with *compile-files-p* = NIL)")
-
-(progn
-  (load (merge-pathnames "src/cold/warm.lisp" *load-pathname*))
   ;; See the giant comment at the bottom of this file
   ;; concerning the need for this GC.
   (gc :full t)
-  (!scan-format-control-strings)
+  (!scan-format-control-strings))
 
-  ;;; Remove docstrings that snuck in, as will happen with
-  ;;; any file compiled in warm load.
-  #-sb-doc
+;;; Either set some more package docstrings, or remove any and all docstrings
+;;; that snuck in (as can happen with any file compiled in warm load)
+;;; depending on presence of the :sb-doc internal feature.
+(if (member :sb-doc sb-impl:+internal-features+)
+  (setf (documentation (find-package "COMMON-LISP") t)
+        "public: home of symbols defined by the ANSI language specification"
+        (documentation (find-package "COMMON-LISP-USER") t)
+        "public: the default package for user code and data"
+        (documentation (find-package "KEYWORD") t)
+        "public: home of keywords")
   (let ((count 0))
     (macrolet ((clear-it (place)
                  `(when ,place
@@ -157,7 +225,9 @@ Please check that all strings which were not recognizable to the compiler
         (clear-it (sb-int:info :random-documentation :stuff s))))
     (when (plusp count)
       (format t "~&Removed ~D doc string~:P" count)))
+)
 
+(progn
   ;; Remove source forms of compiled-to-memory lambda expressions.
   ;; The disassembler is the major culprit for retention of these,
   ;; but there are others and I don't feel like figuring out where from.
@@ -217,7 +287,6 @@ Please check that all strings which were not recognizable to the compiler
   ;; And we can't promise anything across reload, which makes it impossible
   ;; for x86-64 codegen to know which symbols are immediate constants.
   ;; Except that symbols which existed at SBCL build time must be.
-  #+(and immobile-space (not immobile-symbols))
   (do-all-symbols (symbol)
     (when (sb-kernel:immobile-space-obj-p symbol)
       (sb-kernel:set-header-data
@@ -232,17 +301,7 @@ Please check that all strings which were not recognizable to the compiler
                (null (sb-kernel:symbol-info-vector symbol))
                (null (symbol-plist symbol)))
       (setf (sb-kernel:symbol-info symbol) nil)))
-
-  ;; Set doc strings for the standard packages.
-  #+sb-doc
-  (setf (documentation (find-package "COMMON-LISP") t)
-        "public: home of symbols defined by the ANSI language specification"
-        (documentation (find-package "COMMON-LISP-USER") t)
-        "public: the default package for user code and data"
-        (documentation (find-package "KEYWORD") t)
-        "public: home of keywords")
-
-  "done with warm.lisp, about to GC :FULL T")
+)
 
 (sb-ext:gc :full t)
 
@@ -275,19 +334,20 @@ Please check that all strings which were not recognizable to the compiler
 ;;; fasls. Since fasls should be compatible between images originating
 ;;; from the same SBCL build, REPACK-XREF is of no use after the
 ;;; target image has been built.
-#+sb-xref-for-internals (sb-c::repack-xref :verbose 1)
+(when (member :sb-xref-for-internals sb-impl:+internal-features+)
+  (sb-c::repack-xref :verbose 1))
 (fmakunbound 'sb-c::repack-xref)
 
 (progn
   (load (merge-pathnames "src/code/shaketree" *load-pathname*))
   (sb-impl::shake-packages
-   ;; Retain all symbols satisfying this predicate
+   ;; Development mode: retain all symbols with any system-related properties
    #+sb-devel
    (lambda (symbol accessibility)
      (declare (ignore accessibility))
-     ;; Retain all symbols satisfying this predicate
      (or (sb-kernel:symbol-info symbol)
          (and (boundp symbol) (not (keywordp symbol)))))
+   ;; Release mode: retain all symbols satisfying this intricate test
    #-sb-devel
    (lambda (symbol accessibility)
      (case (symbol-package symbol)
@@ -346,8 +406,8 @@ Please check that all strings which were not recognizable to the compiler
   (loop (multiple-value-bind (winp symbol) (iter)
           (if winp (unintern symbol "CL-USER") (return)))))
 
-#+immobile-code (setq sb-c::*compile-to-memory-space* :auto)
-#+sb-fasteval (setq sb-ext:*evaluator-mode* :interpret)
+(setq sb-c:*compile-to-memory-space* :auto)
+(when (find-package "SB-FASTEVAL") (setq sb-ext:*evaluator-mode* :interpret))
 ;; folding doesn't actually do anything unless the backend supports it,
 ;; but the interface exists no matter what.
 (sb-ext:fold-identical-code :aggressive t :preserve-docstrings t)

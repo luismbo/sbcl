@@ -75,6 +75,7 @@
   ;; Conversion between strings and octet-vectors.
   (octets-to-string-fun          (missing-arg) :type function           :read-only t)
   (string-to-octets-fun          (missing-arg) :type function           :read-only t))
+(declaim (freeze-type character-coding))
 
 (declaim (ftype (sfunction (character-coding) symbol) cc-name))
 (defun cc-name (character-coding)

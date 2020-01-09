@@ -228,6 +228,12 @@ sufficiently motivated to do lengthy fixes."
           ;; prior causes compilation to occur into immobile space.
           ;; Failing to see all immobile code would miss some relocs.
           #+immobile-code (sb-vm::choose-code-component-order root-structures)
+          ;; Must clear this cache if asm routines are movable.
+          (setq sb-disassem::*assembler-routines-by-addr* nil
+                ;; and save some space by deleting the instruction decoding table
+                ;; which can be rebuilt on demand. Must be done after DEINIT
+                ;; and CHOOSE-CODE-COMPONENT-ORDER both of which disassemble.
+                sb-disassem::*disassem-inst-space* nil)
           ;; Save the restart function. Logically a passed argument, but can't be,
           ;; as it would require pinning around the whole save operation.
           (with-pinned-objects (#'restart-lisp)
@@ -280,7 +286,11 @@ sufficiently motivated to do lengthy fixes."
          (if shared-info
              (setf (info :function :info name) shared-info)
              (setf (gethash info ht) info))))))
-  (sb-c::coalesce-debug-info) ; Share even more things
+
+  ;; Don't try to assign header slots of code objects. Any of them could be in
+  ;; readonly space. It's not worth the trouble to try to figure out which aren't.
+  #-cheneygc (sb-c::coalesce-debug-info) ; Share even more things
+
   #+sb-fasteval (sb-interpreter::flush-everything)
   (tune-hashtable-sizes-of-all-packages))
 
@@ -333,8 +343,6 @@ sufficiently motivated to do lengthy fixes."
   ;; because coalescing compares by TYPE= which creates more cache entries.
   (coalesce-ctypes)
   (drop-all-hash-caches)
-  ;; Must clear this cache if asm routines are movable.
-  (setq sb-disassem::*assembler-routines-by-addr* nil)
   (os-deinit)
   ;; Perform static linkage. Functions become un-statically-linked
   ;; on demand, for TRACE, redefinition, etc.
@@ -464,8 +472,7 @@ sb-c::
 (defun coalesce-debug-info ()
   (flet ((debug-source= (a b)
            (and (equal (debug-source-plist a) (debug-source-plist b))
-                (eql (debug-source-created a) (debug-source-created b))
-                (eql (debug-source-compiled a) (debug-source-compiled b)))))
+                (eql (debug-source-created a) (debug-source-created b)))))
     ;; Coalesce the following:
     ;;  DEBUG-INFO-SOURCE, DEBUG-FUN-NAME
     ;;  SIMPLE-FUN-ARGLIST, SIMPLE-FUN-TYPE

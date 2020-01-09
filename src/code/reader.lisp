@@ -227,6 +227,7 @@
         (ecase case (:upcase 0) (:downcase 1) (:preserve 2) (:invert 3)))
   case)
 
+(declaim (inline readtable-normalization))
 (defun readtable-normalization (readtable)
   "Returns T if READTABLE normalizes strings to NFKC, and NIL otherwise.
 The READTABLE-NORMALIZATION of the standard readtable is T."
@@ -553,7 +554,7 @@ standard Lisp readtable when NIL."
 
 ;; A list of available TOKEN-BUFs
 (declaim (type (or null token-buf) *token-buf-pool*))
-(!define-thread-local *token-buf-pool* nil)
+(define-thread-local *token-buf-pool* nil)
 
 (defun reset-read-buffer (buffer)
   ;; Turn BUFFER into an empty read buffer.
