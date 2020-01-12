@@ -889,9 +889,8 @@
          (stream-element-mode (car it))))
       (:external-format
        (let ((last (last streams)))
-         (if last
-             (stream-external-format (car last))
-             :default)))
+         (when last
+           (stream-external-format (car last)))))
       (:file-length
        (let ((last (last streams)))
          (if last
