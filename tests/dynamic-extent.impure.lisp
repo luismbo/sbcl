@@ -340,7 +340,7 @@
 
 ;; :stack-allocatable-fixed-objects is necessary but not sufficient
 (with-test (:name :copy-structure-dx :skipped-on (not (or :x86 :x86-64)))
-  (let ((thing sb-impl::**character-codings**))
+  (let ((thing (make-hash-table)))
     ;; check some preconditions
     (assert (typep thing 'hash-table))
     (assert (/= (sb-kernel:layout-bitmap (sb-kernel:%instance-layout thing))
