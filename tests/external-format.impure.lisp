@@ -1016,7 +1016,7 @@
 (with-test (:name :invalid-external-format :fails-on :win32)
   (labels ((test-error (e)
              (assert (typep e 'error))
-             (unless (equal "Undefined external-format: :BAD-FORMAT"
+             (unless (equal "Undefined character-coding: :BAD-FORMAT"
                             (princ-to-string e))
                (error "Bad error:~%  ~A" e)))
            (test (direction)
