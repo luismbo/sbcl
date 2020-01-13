@@ -680,7 +680,7 @@
 (with-test (:name :overeager-character-buffering :skipped-on :win32)
   (let ((use-threads #+sb-thread t)
         (proc nil))
-    (sb-int:dohash ((format _) sb-impl::*external-formats*)
+    (sb-int:dohash ((format _) sb-impl::**character-codings**)
       (declare (ignore _))
       (with-scratch-file (fifo)
         (unwind-protect
