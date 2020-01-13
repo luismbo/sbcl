@@ -39,7 +39,6 @@
                            (write-char-none-buffered-fun (cc-write-char-none-buffered-fun other))
                            (write-char-line-buffered-fun (cc-write-char-line-buffered-fun other))
                            (write-char-full-buffered-fun (cc-write-char-full-buffered-fun other))
-                           &aux
                            (names (cc-names other))
                            (default-replacement-character (cc-default-replacement-character other))
                            (bytes-for-char-fun (cc-bytes-for-char-fun other))
@@ -98,9 +97,16 @@
    character-coding
    :read-n-chars-fun (funcall function (cc-read-n-chars-fun character-coding))
    :read-char-fun (funcall function (cc-read-char-fun character-coding))
+   :write-n-bytes-fun (funcall function (cc-write-n-bytes-fun character-coding))
    :write-char-none-buffered-fun (funcall function (cc-write-char-none-buffered-fun character-coding))
    :write-char-line-buffered-fun (funcall function (cc-write-char-line-buffered-fun character-coding))
-   :write-char-full-buffered-fun (funcall function (cc-write-char-full-buffered-fun character-coding))))
+   :write-char-full-buffered-fun (funcall function (cc-write-char-full-buffered-fun character-coding))
+   :resync-fun (funcall function (cc-resync-fun character-coding))
+   :bytes-for-char-fun (funcall function (cc-bytes-for-char-fun character-coding))
+   :read-c-string-fun (funcall function (cc-read-c-string-fun character-coding))
+   :write-c-string-fun (funcall function (cc-write-c-string-fun character-coding))
+   :octets-to-string-fun (funcall function (cc-octets-to-string-fun character-coding))
+   :string-to-octets-fun (funcall function (cc-string-to-octets-fun character-coding))))
 
 ;;; All available character codings. The table maps from
 ;;; character-coding names to CHARACTER-CODING structures.
@@ -916,25 +922,6 @@ Experimental."
       (declare (optimize (speed 3) (safety 0)))
     (let ((external-format (find-external-format external-format))) ; TODO was get-external-format-OR-LOSE
       (funcall (ef-read-c-string-fun external-format) sap element-type))))
-
-#+TODO-unused? (defun wrap-external-format-functions (external-format function)
-  (declare (ignore function))
-  (let ((result (%copy-character-coding external-format)))
-    (macrolet ((frob (accessor)
-                 `(setf (,accessor result) (funcall function (,accessor result)))))
-      #+later (frob ef-read-n-chars-fun)
-      #+later (frob ef-read-char-fun)
-      #+no (frob ef-write-n-bytes-fun)
-      #+later (frob ef-write-char-none-buffered-fun)
-      #+later (frob ef-write-char-line-buffered-fun)
-      #+later (frob ef-write-char-full-buffered-fun)
-      #+no (frob ef-resync-fun)
-      #+no (frob ef-bytes-for-char-fun)
-      #+no (frob ef-read-c-string-fun)
-      #+no (frob ef-write-c-string-fun)
-      #+no (frob ef-octets-to-string-fun)
-      #+no (frob ef-string-to-octets-fun))
-    result))
 
 (defun external-format-keyword (spec)
   (typecase spec
