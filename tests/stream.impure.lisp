@@ -832,4 +832,27 @@
            (sb-impl::ansi-stream-read-string-from-frc-buffer string s 0 nil)))
       (assert (= endpos 0)))))
 
+(with-test (:name (:newline-codings :streams))
+  (sb-int:dohash ((coding _) sb-impl::**character-codings**)
+    (declare (ignore _))
+    (sb-int:dohash ((nl-coding _) sb-impl::**newline-codings**)
+      (declare (ignore _))
+      (let ((external-format (list coding :newline-coding nl-coding)))
+        (dolist (element-type '(character base-char :default))
+          (let ((string (format nil "foobar, external-format: ~s, element-type: ~s"
+                                external-format element-type)))
+            (with-scratch-file (scratch)
+              (with-open-file (stream scratch
+                                      :direction :output
+                                      :if-exists :overwrite
+                                      :if-does-not-exist :create
+                                      :external-format external-format
+                                      :element-type element-type)
+                (write-line string stream))
+              (with-open-file (stream scratch
+                                      :direction :input
+                                      :external-format external-format
+                                      :element-type element-type)
+                (assert (string= string (read-line stream)))))))))))
+
 ;;; success
