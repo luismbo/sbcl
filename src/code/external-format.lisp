@@ -719,6 +719,57 @@ Experimental."
     (format stream "~A ~A"
             (cc-name (ef-character-coding object))
             (nc-name (ef-newline-coding object)))))
+#||
+(defun lbo/crlf-newline-reader (stream eof-error)
+  (block nil
+    (let ((byte (input-unsigned-8bit-byte stream eof-error :eof)))
+      (cond ((eql byte :eof) (return :eof))
+            ((not (eql byte 13)) (return :mismatch))))
+    (let ((byte (input-unsigned-8bit-byte stream eof-error :eof)))
+      (cond
+        ((eql byte :eof)
+         (decf (buffer-head (fd-stream-ibuf stream)) 1)
+         (return :eof))
+        ((not (eql byte 10))
+         (decf (buffer-head (fd-stream-ibuf stream)) 1)
+         (return :mismatch))))
+    t))
+
+(defun lbo/crlf-newline-reader-2 (stream eof-error)
+  (BLOCK NIL
+    (LET ((BYTE
+            (SB-IMPL::INPUT-UNSIGNED-8BIT-BYTE STREAM SB-IMPL::EOF-ERROR :EOF)))
+      (COND
+        ((EQL BYTE :EOF)
+         (DECF (SB-IMPL::BUFFER-HEAD (SB-IMPL::FD-STREAM-IBUF STREAM)) 1)
+         (RETURN :EOF))
+        ((NOT (EQL BYTE 13))
+         (DECF (SB-IMPL::BUFFER-HEAD (SB-IMPL::FD-STREAM-IBUF STREAM)) 1)
+         (RETURN :MISMATCH))))
+    (LET ((BYTE
+            (SB-IMPL::INPUT-UNSIGNED-8BIT-BYTE STREAM SB-IMPL::EOF-ERROR :EOF)))
+      (COND
+        ((EQL BYTE :EOF)
+         (DECF (SB-IMPL::BUFFER-HEAD (SB-IMPL::FD-STREAM-IBUF STREAM)) 2)
+         (RETURN :EOF))
+        ((NOT (EQL BYTE 10))
+         (DECF (SB-IMPL::BUFFER-HEAD (SB-IMPL::FD-STREAM-IBUF STREAM)) 2)
+         (RETURN :MISMATCH))))
+    T))
+
+(defun read-char-wrapper (fun read-newline-fun stream eof-error eof-value)
+  (let ((nl #+nil :mismatch
+            #+nil (funcall read-newline-fun stream eof-error)
+            #-nil (lbo/crlf-newline-reader-2 stream eof-error)))
+    (format t "got ~a from read-newline-fun~%" nl)
+    (ecase nl
+      ((t) #\Newline)
+      (:eof eof-value)
+      (:mismatch
+       (let ((res (funcall fun stream eof-error eof-value)))
+         (format t "got ~a from fun~%" res)
+         res)))))
+||#
 
 (defun make-external-format (character-coding newline-coding)
   (flet ((maybe-wrap-bytes-for-char-fun (fun)
@@ -742,6 +793,7 @@ Experimental."
            (let ((read-newline-fun (nc-read-newline-fun newline-coding)))
              (if read-newline-fun
                  (lambda (stream eof-error eof-value) ; TODO types
+                   #+lbo (read-char-wrapper fun read-newline-fun stream eof-error eof-value)
                    (ecase (funcall read-newline-fun stream eof-error)
                      ((t) #\Newline)
                      (:eof eof-value)
