@@ -771,6 +771,33 @@ Experimental."
          res)))))
 ||#
 
+(defun read-char-wrapper (fun read-newline-fun stream eof-error eof-value)
+  (declare (ignorable read-newline-fun))
+  (let (#+nil (nl #+nil :mismatch
+                  #+nil (funcall read-newline-fun stream eof-error)
+                  #+nil (lbo/crlf-newline-reader-2 stream eof-error)))
+    (let ((char (funcall fun stream eof-error eof-value)))
+      (if (and (characterp char) (eql (char-code char) 13))     ; #\Return?
+          (let ((next (funcall fun stream eof-error eof-value)))
+            next)
+          char))))
+
+(defun read-n-chars-wrapper (fun newline-sequence stream buffer start requested eof-error-p)
+  (declare (type string buffer))
+  (let* ((count (funcall fun stream buffer start requested eof-error-p))
+         (end (+ start count)))
+    (declare (type index count))
+    (loop for previous = start then index
+          for index = (search newline-sequence buffer
+                              :start2 previous :end2 end)
+          while index
+          do (setf (aref buffer index) #\Newline
+                   (subseq buffer (+ index 1) (- end 1))
+                   (subseq buffer (+ index 2) end))
+             (incf index)
+             (decf count))
+    count))
+
 (defun make-external-format (character-coding newline-coding)
   (flet ((maybe-wrap-bytes-for-char-fun (fun)
            (declare (type function fun))
@@ -793,11 +820,20 @@ Experimental."
            (let ((read-newline-fun (nc-read-newline-fun newline-coding)))
              (if read-newline-fun
                  (lambda (stream eof-error eof-value) ; TODO types
-                   #+lbo (read-char-wrapper fun read-newline-fun stream eof-error eof-value)
+                   ;; #+debug
+                   (read-char-wrapper fun read-newline-fun stream eof-error eof-value)
+                   #+old
                    (ecase (funcall read-newline-fun stream eof-error)
                      ((t) #\Newline)
                      (:eof eof-value)
-                     (:mismatch (funcall fun stream eof-error eof-value))))
+                     (:mismatch (funcall fun stream eof-error eof-value)))
+                   ;; TODO: assuming CRLF here.
+                   #+new
+                   (let ((char (funcall read-newline-fun stream eof-error)))
+                     (if (eq char #\Return)
+                         (let ((next (funcall read-newline-fun stream eof-error)))
+                           next)
+                         char)))
                  fun)))
 
          (maybe-wrap-read-n-chars-fun (fun)
@@ -818,6 +854,8 @@ Experimental."
                 (let ((newline-sequence (coerce newline-sequence 'simple-base-string))) ; TODO necessary?
                   (lambda (stream buffer start requested eof-error-p)
                     (declare (type string buffer))
+                    (read-n-chars-wrapper fun newline-sequence stream buffer start requested eof-error-p)
+                    #+old
                     (let* ((count (funcall fun stream buffer start requested eof-error-p))
                            (end (+ start count)))
                       (declare (type index count))

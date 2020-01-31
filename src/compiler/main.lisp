@@ -932,6 +932,8 @@ necessary, since type inference may take arbitrarily long to converge.")
                    pos)
                :line/col
                (and (form-tracking-stream-p stream)
+                    ;; HACK: when using CRLF this sometimes becomes NIL unexpectedly.
+                    (form-tracking-stream-form-start-char-pos stream)
                     (line/col-from-charpos
                      stream
                      (form-tracking-stream-form-start-char-pos stream)))
