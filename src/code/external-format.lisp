@@ -929,7 +929,6 @@ Experimental."
     (keyword spec)
     ((cons keyword) (car spec))))
 
-;; spelling: canonicalize or normalize
 (defun canonize-external-format (spec external-format)
   (let ((name (cc-name (ef-character-coding external-format))))
     (typecase spec
@@ -938,11 +937,9 @@ Experimental."
       ((cons keyword) ; TODO normalize newline-coding name
        (cons name (rest spec))))))
 
-(defvar *default-newline-coding* #+win32 :crlf #-win32 :lf)
-
 (defun external-format-designator-to-key (designator
                                           &key
-                                            (default-newline-coding *default-newline-coding*)
+                                            (default-newline-coding :lf) ; TODO platform-specific
                                             default-replacement)
   (destructuring-bind (character-coding-name
                        &key
