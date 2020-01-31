@@ -116,7 +116,7 @@
                `((decf (buffer-head (fd-stream-ibuf stream)) ,amount)) ; TODO are these fd-streams?
                )))
       `(block nil
-         ,@(loop for position from 1
+         ,@(loop for position from 0
                  for octet in octet-sequence
                  collect `(let ((byte (input-unsigned-8bit-byte
                                        stream eof-error :eof)))
