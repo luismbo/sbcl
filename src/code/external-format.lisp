@@ -784,18 +784,27 @@ Experimental."
 
 (defun read-n-chars-wrapper (fun newline-sequence stream buffer start requested eof-error-p)
   (declare (type string buffer))
-  (let* ((count (funcall fun stream buffer start requested eof-error-p))
+  ;; (funcall fun stream buffer start requested eof-error-p)
+  (let* ((orig-count (funcall fun stream buffer start requested eof-error-p))
+	 (count orig-count)
          (end (+ start count)))
     (declare (type index count))
+    ;;(format t "~&buffer before (~a): ~s~%" count (subseq buffer start end))
     (loop for previous = start then index
-          for index = (search newline-sequence buffer
-                              :start2 previous :end2 end)
+          for index = (position (char newline-sequence 0) ; HACK: CRLF only
+				buffer
+				:start previous
+				:end end)
           while index
-          do (setf (aref buffer index) #\Newline
-                   (subseq buffer (+ index 1) (- end 1))
-                   (subseq buffer (+ index 2) end))
-             (incf index)
+          do ;; (setf (aref buffer index) #\Newline
+             ;;       (subseq buffer (+ index 1) (- end 1))
+             ;;       (subseq buffer (+ index 2) end))
+	     (setf (subseq buffer index (- end 1))
+		   (subseq buffer (1+ index) end))
+             ;; (incf index) ; <-- HACK: only if newline-sequence has length 2
+	     (decf end) ; HACK
              (decf count))
+    ;;(format t "~&buffer after (~a): ~s~%" count (subseq buffer start (+ start count)))
     count))
 
 (defun make-external-format (character-coding newline-coding)

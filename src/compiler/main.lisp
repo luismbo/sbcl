@@ -933,7 +933,11 @@ necessary, since type inference may take arbitrarily long to converge.")
                :line/col
                (and (form-tracking-stream-p stream)
                     ;; HACK: when using CRLF this sometimes becomes NIL unexpectedly.
-                    (form-tracking-stream-form-start-char-pos stream)
+		    ;;
+		    ;; HACK: not anymore, now that an egregious bug in
+		    ;; read-n-chars-wrapper has been fixed.
+		    ;;
+                    ;; (form-tracking-stream-form-start-char-pos stream)
                     (line/col-from-charpos
                      stream
                      (form-tracking-stream-form-start-char-pos stream)))
