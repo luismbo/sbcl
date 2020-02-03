@@ -357,8 +357,12 @@ Experimental."
          ;; FIXME We expect the newline coding to set the column to
          ;; 0. But if the newline coding is the identity, it is
          ;; bypassed, so the column does not get set.
-         (setf (fd-stream-output-column stream)
-               (+ (truly-the unsigned-byte (fd-stream-output-column stream)) 1))
+	 ;;
+	 ;; HACK: reverted Jan's change here.
+	 (if (eql byte #\Newline)
+	     (setf (fd-stream-output-column stream) 0)
+	     (setf (fd-stream-output-column stream)
+		   (+ (truly-the unsigned-byte (fd-stream-output-column stream)) 1)))
          (let ((bits (char-code byte))
                (sap (buffer-sap obuf))
                (tail (buffer-tail obuf)))
@@ -925,8 +929,7 @@ Experimental."
          (maybe-wrap-write-char-fun (fun)
            (declare (type function fun))
            (let ((write-newline-fun (nc-write-newline-fun newline-coding)))
-             (if t ;; FIXME should only happen for non-NIL write-newline-fun, but
-                   ;; WRITE-NEWLINE-FUN resets the stream column so we can't bypass it
+             (if write-newline-fun
                  (lambda (stream char)
                    (declare (type stream stream)
                             (type character char))

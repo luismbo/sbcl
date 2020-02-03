@@ -158,7 +158,7 @@
          :newline-sequence  (map 'string #'code-char ',newline-sequence) ; TODO unused?
          :read-newline-fun  ,(unless trivialp
                                (make-read-newline-fun))
-         :write-newline-fun ,(unless nil ; trivialp FIXME can't optimize trivial case because stream's column must be reset by the write newline function
+         :write-newline-fun ,(unless trivialp ; FIXME can't optimize trivial case because stream's column must be reset by the write newline function
                                (make-write-newline-fun))))))
 
 
