@@ -357,12 +357,12 @@ Experimental."
          ;; FIXME We expect the newline coding to set the column to
          ;; 0. But if the newline coding is the identity, it is
          ;; bypassed, so the column does not get set.
-	 ;;
-	 ;; HACK: reverted Jan's change here.
-	 (if (eql byte #\Newline)
-	     (setf (fd-stream-output-column stream) 0)
-	     (setf (fd-stream-output-column stream)
-		   (+ (truly-the unsigned-byte (fd-stream-output-column stream)) 1)))
+         ;;
+         ;; HACK: reverted Jan's change here.
+         (if (eql byte #\Newline)
+             (setf (fd-stream-output-column stream) 0)
+             (setf (fd-stream-output-column stream)
+                   (+ (truly-the unsigned-byte (fd-stream-output-column stream)) 1)))
          (let ((bits (char-code byte))
                (sap (buffer-sap obuf))
                (tail (buffer-tail obuf)))
@@ -790,23 +790,23 @@ Experimental."
   (declare (type string buffer))
   ;; (funcall fun stream buffer start requested eof-error-p)
   (let* ((orig-count (funcall fun stream buffer start requested eof-error-p))
-	 (count orig-count)
+         (count orig-count)
          (end (+ start count)))
     (declare (type index count))
     ;;(format t "~&buffer before (~a): ~s~%" count (subseq buffer start end))
     (loop for previous = start then index
           for index = (position (char newline-sequence 0) ; HACK: CRLF only
-				buffer
-				:start previous
-				:end end)
+                                buffer
+                                :start previous
+                                :end end)
           while index
           do ;; (setf (aref buffer index) #\Newline
              ;;       (subseq buffer (+ index 1) (- end 1))
              ;;       (subseq buffer (+ index 2) end))
-	     (setf (subseq buffer index (- end 1))
-		   (subseq buffer (1+ index) end))
+             (setf (subseq buffer index (- end 1))
+                   (subseq buffer (1+ index) end))
              ;; (incf index) ; <-- HACK: only if newline-sequence has length 2
-	     (decf end) ; HACK
+             (decf end) ; HACK
              (decf count))
     ;;(format t "~&buffer after (~a): ~s~%" count (subseq buffer start (+ start count)))
     count))
