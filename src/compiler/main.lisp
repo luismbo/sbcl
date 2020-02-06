@@ -851,6 +851,8 @@ necessary, since type inference may take arbitrarily long to converge.")
 ;;;   This gives the effect of rebinding around each file.
 ;;; which doesn't seem to be true now. Check to make sure that if
 ;;; such rebinding is necessary, it's still done somewhere.
+;;; FIXME: We will want to have a way to process multiple files again
+;;; for the sake of block compilation.
 (defun get-source-stream (info)
   (declare (type source-info info))
   (or (source-info-stream info)
@@ -1641,15 +1643,15 @@ necessary, since type inference may take arbitrarily long to converge.")
                   ;; we should look at *HANDLED-CONDITIONS*.
                   (null *lexenv*))))
              *handled-conditions*))
-       (handle-p (condition ctype)
-         #+sb-xc-host (typep condition (type-specifier ctype))
-         #-sb-xc-host (%%typep condition ctype)))
+       (handle-p (condition type)
+         #+sb-xc-host (cl:typep condition type) ; TYPE is a sexpr
+         #-sb-xc-host (%%typep condition type))) ; TYPE is a CTYPE
   (declare (inline handle-p))
 
   (defun handle-condition-p (condition)
     (dolist (muffle (get-handled-conditions) nil)
-      (destructuring-bind (ctype . restart-name) muffle
-        (when (and (handle-p condition ctype)
+      (destructuring-bind (type . restart-name) muffle
+        (when (and (handle-p condition type)
                    (find-restart restart-name condition))
           (return t)))))
 
@@ -1657,8 +1659,8 @@ necessary, since type inference may take arbitrarily long to converge.")
     (let ((muffles (get-handled-conditions)))
       (aver muffles) ; FIXME: looks redundant with "fell through"
       (dolist (muffle muffles (bug "fell through"))
-        (destructuring-bind (ctype . restart-name) muffle
-          (when (handle-p condition ctype)
+        (destructuring-bind (type . restart-name) muffle
+          (when (handle-p condition type)
             (awhen (find-restart restart-name condition)
               (invoke-restart it)))))))
 
@@ -1708,7 +1710,10 @@ necessary, since type inference may take arbitrarily long to converge.")
            (declare (ignore error))
            (return-from sub-compile-file (values t t t))))
         (*current-path* nil)
-        (sb-xc:*gensym-counter* 0))
+        (sb-xc:*gensym-counter* 0)
+        (sb-impl::*eval-source-info* nil)
+        (sb-impl::*eval-tlf-index* nil)
+        (sb-impl::*eval-source-context* nil))
     (handler-case
         (handler-bind (((satisfies handle-condition-p) #'handle-condition-handler))
           (with-compilation-values

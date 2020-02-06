@@ -1535,17 +1535,6 @@
 
 (defun ash-derive-type-aux (n-type shift same-arg)
   (declare (ignore same-arg))
-  ;; KLUDGE: All this ASH optimization is suppressed under CMU CL for
-  ;; some bignum cases because as of version 2.4.6 for Debian and 18d,
-  ;; CMU CL blows up on (ASH 1000000000 -100000000000) (i.e. ASH of
-  ;; two bignums yielding zero) and it's hard to avoid that
-  ;; calculation in here.
-  #+host-quirks-cmu
-  (when (and (or (typep (numeric-type-low n-type) 'bignum)
-                 (typep (numeric-type-high n-type) 'bignum))
-             (or (typep (numeric-type-low shift) 'bignum)
-                 (typep (numeric-type-high shift) 'bignum)))
-    (return-from ash-derive-type-aux *universal-type*))
   (flet ((ash-outer (n s)
            (when (and (fixnump s)
                       (<= s 64)
@@ -4359,6 +4348,36 @@
       (unless (>= alignment bits)
         (give-up-ir1-transform))
       `(ash numerator ,(- bits)))))
+
+(deftransforms (rational rationalize) ((x) (rational))
+  'x)
+
+(defoptimizer (rational derive-type) ((x))
+  (one-arg-derive-type x (lambda (type)
+                           (flet ((%rational (bound)
+                                    (typecase bound
+                                      (cons (list (rational (car bound))))
+                                      (null nil)
+                                      (t (rational bound)))))
+                             (make-numeric-type
+                              :class 'rational
+                              :low (%rational (numeric-type-low type))
+                              :high (%rational (numeric-type-high type)))))
+                       #'rational))
+
+(defoptimizer (rationalize derive-type) ((x))
+  (one-arg-derive-type x (lambda (type)
+                           (flet ((%rationalize (bound)
+                                    (typecase bound
+                                      (cons (list (rationalize (car bound))))
+                                      (null nil)
+                                      (t (rationalize bound)))))
+                             (make-numeric-type
+                              :class 'rational
+                              :low (%rationalize (numeric-type-low type))
+                              :high (%rationalize (numeric-type-high type)))))
+                       #'rationalize))
+
 
 ;;;; transforming APPLY
 

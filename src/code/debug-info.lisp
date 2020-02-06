@@ -443,7 +443,6 @@
 ;;; given file.
 (defstruct (file-info
              (:copier nil)
-             #-no-ansi-print-object
              (:print-object (lambda (s stream)
                               (print-unreadable-object (s stream :type t)
                                 (princ (file-info-name s) stream)))))
@@ -468,7 +467,7 @@
                                                            :read-only t)
   ;; A vector of character ranges than span each subform in the TLF,
   ;; reset to empty for each one, updated by form-tracking-stream-observer.
-  (subforms nil :type (or null (vector t)) :read-only t :read-only t)
+  (subforms nil :type (or null (vector t)) :read-only t)
   ;; A list of objects about which the compile may/would/should have signaled
   ;; a style-warning in the :compile-toplevel situation, so we don't do it
   ;; again in the :load-toplevel situation.
@@ -484,7 +483,6 @@
 ;;; The SOURCE-INFO structure provides a handle on all the source
 ;;; information for an entire compilation.
 (defstruct (source-info
-             #-no-ansi-print-object
              (:print-object (lambda (s stream)
                               (print-unreadable-object
                                   (s stream :type t :identity t))))

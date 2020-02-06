@@ -8,7 +8,7 @@
 # SSH is invoked to compile the C runtime.
 # Passwordless login to the target machine is required.
 
-config_options="--without-gencgc --with-cheneygc"
+#config_options="--without-gencgc --with-cheneygc"
 if [ $1 = -p ]
 then
   ssh_port_opt="-p $2"
@@ -42,7 +42,7 @@ ENV=$3  # if you need to set SBCL_ARCH,CFLAGS,etc remotely
 set -ex
 
 ssh $ssh_port_opt $host cd $root \; $checkout '&&' \
-  $ENV sh make-config.sh $config_options '&&' \
+  $ENV sh make-config.sh $config_options --no-host-lisp-check '&&' \
   mv version.lisp-expr remote-version.lisp-expr
 scp $scp_port_opt $host:$root/{remote-version.lisp-expr,local-target-features.lisp-expr,output/build-id.inc} .
 mv build-id.inc output

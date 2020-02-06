@@ -189,11 +189,14 @@
       result)))
 (compile 'read-from-file)
 
-;;; Try to minimize/conceal any non-standardness of the host Common Lisp.
-#-sbcl (load "src/cold/ansify.lisp")
+#+sbcl (let ((ext (find-package "SB-EXT")))
+         ;; prevent things from working by accident when they would not work in
+         ;; ANSI lisp, e.g. ~/print-symbol-with-prefix/ (missing SB-EXT:)
+         (when (member ext (package-use-list "CL-USER"))
+           (unuse-package ext "CL-USER")))
 
-;;;; Do not put SBCL-specific things in 'ansify'. Put them here.
-;;;; And there had better not be a reason that SBCL needs ansification.
+#+cmu
+(setq *compile-print* nil) ; too much noise, can't see the actual warnings
 #+sbcl
 (progn
   (setq *compile-print* nil)
@@ -426,6 +429,7 @@
 (compile 'stem-source-path)
 
 ;;; Determine the object path for a stem/flags/mode combination.
+(export 'stem-object-path)
 (defun stem-object-path (stem flags mode)
   (multiple-value-bind (obj-prefix obj-suffix)
       (ecase mode
@@ -618,7 +622,7 @@
 (compile 'compile-stem)
 
 (defparameter *host-quirks*
-  (or #+cmu  '(:host-quirks-cmu :no-ansi-print-object)
+  (or #+cmu  '(:host-quirks-cmu)
       #+ecl  '(:host-quirks-ecl)
       #+sbcl '(:host-quirks-sbcl))) ; not so much a "quirk", but consistent anyway
 

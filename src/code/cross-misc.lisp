@@ -79,6 +79,17 @@
 (defun funcallable-instance-p (x)
   (error "Called FUNCALLABLE-INSTANCE-P ~s" x))
 
+(defun simple-fun-p (x)
+  (if (symbolp x) nil (error "Called SIMPLE-FUN-P on ~S" x)))
+(defun closurep (x)
+  (if (symbolp x) nil (error "Called CLOSUREP on ~S" x)))
+(defun unbound-marker-p (x)
+  (if (symbolp x) nil (error "Called UNBOUND-MARKER-P on ~S" x)))
+(defun vector-with-fill-pointer-p (x)
+  (if (symbolp x) nil (error "Called VECTOR-WITH-FILL-POINTER-P on ~S" x)))
+
+(defparameter sb-vm::*backend-cross-foldable-predicates* nil)
+
 ;; The definition of TYPE-SPECIFIER for the target appears in the file
 ;; 'deftypes-for-target' - it allows CLASSes and CLASOIDs as specifiers.
 ;; Instances are never used as specifiers when building SBCL,
@@ -327,6 +338,10 @@
             form))))))))
 
 (defmacro sb-format:tokens (string) string)
+
+(defmacro sb-thread::with-recursive-system-lock ((lock) &body body)
+  (declare (ignore lock))
+  `(progn ,@body))
 
 ;;; Used by our lockfree memoization functions (define-hash-cache)
 (defmacro sb-thread:barrier ((kind) &body body)

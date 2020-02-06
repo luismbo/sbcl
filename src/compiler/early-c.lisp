@@ -153,7 +153,7 @@ the stack without triggering overflow protection.")
 ;;; Assigning a literal object enables genesis to dump and load it
 ;;; without need of a cold-init function.
 #-sb-xc-host
-(!define-load-time-global **world-lock** #.(sb-thread:make-mutex :name "World Lock"))
+(!define-load-time-global **world-lock** (sb-thread:make-mutex :name "World Lock"))
 
 #-sb-xc-host
 (define-load-time-global *static-linker-lock*
@@ -174,7 +174,6 @@ the stack without triggering overflow protection.")
        (!define-load-time-global *type-cache-nonce* 0))
 
 (defstruct (undefined-warning
-            #-no-ansi-print-object
             (:print-object (lambda (x s)
                              (print-unreadable-object (x s :type t)
                                (prin1 (undefined-warning-name x) s))))
@@ -232,10 +231,11 @@ the stack without triggering overflow protection.")
                 :format-arguments (list symbol)))
   (values))
 
-(defstruct (debug-name-marker (:print-function print-debug-name-marker)
-                              ;; make these satisfy SB-XC:INSTANCEP
-                              #+sb-xc-host (:include structure!object)
-                              (:copier nil)))
+;;; This is DEF!STRUCT so that when SB-C:DUMPABLE-LEAFLIKE-P invokes
+;;; SB-XC:TYPEP in make-host-2, it does not need need to signal PARSE-UNKNOWN
+;;; for each and every constant seen up until this structure gets defined.
+(def!struct (debug-name-marker (:print-function print-debug-name-marker)
+                               (:copier nil)))
 
 (defvar *debug-name-level* 4)
 (defvar *debug-name-length* 12)

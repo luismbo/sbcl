@@ -92,12 +92,12 @@
 ;;; chance to run, instead of immediately returning NIL, T.
 (defun delegate-complex-subtypep-arg2 (type1 type2)
   (let ((subtypep-arg1
-         (type-class-complex-subtypep-arg1 (type-class-info type1))))
+         (type-class-complex-subtypep-arg1 (type-class type1))))
     (if subtypep-arg1
         (funcall subtypep-arg1 type1 type2)
         (values nil t))))
 (defun delegate-complex-intersection2 (type1 type2)
-  (let ((method (type-class-complex-intersection2 (type-class-info type1))))
+  (let ((method (type-class-complex-intersection2 (type-class type1))))
     (if (and method (not (eq method #'delegate-complex-intersection2)))
         (funcall method type2 type1)
         (hierarchical-intersection2 type1 type2))))
@@ -479,7 +479,7 @@
   (type= (constant-type-type type1) (constant-type-type type2)))
 
 (def-type-translator constant-arg ((:context context) type)
-  (make-constant-type :type (single-value-specifier-type-r context type)))
+  (make-constant-type :type (single-value-specifier-type type context)))
 
 ;;; Return the lambda-list-like type specification corresponding
 ;;; to an ARGS-TYPE.
@@ -512,7 +512,7 @@
 
 (defun translate-fun-type (context args result
                            &key designator)
-  (let ((result (coerce-to-values (values-specifier-type-r context result))))
+  (let ((result (coerce-to-values (basic-parse-typespec result context))))
     (cond ((neq args '*)
            (multiple-value-bind (llks required optional rest keywords)
                (parse-args-types context args :function-type)
@@ -550,13 +550,11 @@
   (translate-fun-type context args result :designator t))
 
 (def-type-translator values :list ((:context context) &rest values)
-  (if (eq values '*)
-      *wild-type*
-      (multiple-value-bind (llks required optional rest)
-          (parse-args-types context values :values-type)
-        (if (plusp llks)
-            (make-values-type :required required :optional optional :rest rest)
-            (make-short-values-type required)))))
+  (multiple-value-bind (llks required optional rest)
+      (parse-args-types context values :values-type)
+    (if (plusp llks)
+        (make-values-type :required required :optional optional :rest rest)
+        (make-short-values-type required))))
 
 ;;;; VALUES types interfaces
 ;;;;
@@ -1000,9 +998,10 @@
         ;; and at least one is interned, then return no and certainty.
         ;; Most of the interned CTYPEs admit this optimization,
         ;; NUMERIC and MEMBER types do as well.
-        ((and (minusp (logior (type-hash-value type1) (type-hash-value type2)))
-              (logtest (logand (type-hash-value type1) (type-hash-value type2))
-                       +type-admits-type=-optimization+))
+        ((and (logtest +type-internedp+
+                       (logior (type-hash-value type1) (type-hash-value type2)))
+              (logtest +type-admits-type=-optimization+
+                       (logand (type-hash-value type1) (type-hash-value type2))))
          (values nil t))
         (t
          (memoize (!invoke-type-method :simple-= :complex-= type1 type2)))))
@@ -1012,7 +1011,7 @@
   (logtest (type-hash-value ctype) +type-admits-type=-optimization+))
 
 (defun ctype-interned-p (ctype)
-  (minusp (type-hash-value ctype)))
+  (logtest (type-hash-value ctype) +type-internedp+))
 
 ;;; Not exactly the negation of TYPE=, since when the relationship is
 ;;; uncertain, we still return NIL, NIL. This is useful in cases where
@@ -1172,7 +1171,7 @@
 ;;; object.
 (defun type-specifier (type)
   (declare (type ctype type))
-  (funcall (type-class-unparse (type-class-info type)) type))
+  (funcall (type-class-unparse (type-class type)) type))
 
 ;;; Don't try to define a print method until it's actually gonna work!
 ;;; (Otherwise this would be near the DEFSTRUCT)
@@ -1185,14 +1184,14 @@
                              :values 1)
               ((type eq))
   (declare (type ctype type))
-  (funcall (type-class-negate (type-class-info type)) type))
+  (funcall (type-class-negate (type-class type)) type))
 
 (defun-cached (type-singleton-p :hash-function #'type-hash-value
                              :hash-bits 8
                              :values 2)
               ((type eq))
   (declare (type ctype type))
-  (let ((function (type-class-singleton-p (type-class-info type))))
+  (let ((function (type-class-singleton-p (type-class type))))
     (if function
         (funcall function type)
         (values nil nil))))
@@ -1619,6 +1618,8 @@
       (values nil nil)))
 
 (def-type-translator satisfies :list (&whole whole predicate-name)
+  ;; "* may appear as the argument to a SATISFIES type specifier, but it
+  ;;  indicates the literal symbol *" (which in practice is not useful)
   (unless (symbolp predicate-name)
     (error 'simple-type-error
            :datum predicate-name
@@ -1805,17 +1806,22 @@
   (type= (negation-type-type type1) (negation-type-type type2)))
 
 (def-type-translator not :list ((:context context) typespec)
-  (type-negation (specifier-type-r context typespec)))
+  ;; "* is not permitted as an argument to the NOT type specifier."
+  (type-negation (specifier-type typespec context 'not)))
 
 ;;;; numeric types
 
 (declaim (inline numeric-type-equal))
 (defun numeric-type-equal (type1 type2)
+  ;; TODO: these 3 can be packed into an integer which makes for just 1 comparison.
+  ;; (Maybe if 64-bit words use the %BITS slot which has plenty of unused bits)
   (and (eq (numeric-type-class type1) (numeric-type-class type2))
        (eq (numeric-type-format type1) (numeric-type-format type2))
        (eq (numeric-type-complexp type1) (numeric-type-complexp type2))))
 
 (define-type-method (number :simple-=) (type1 type2)
+  ;; TODO: construct the hash bits for NUMBER types using a deterministic hash of
+  ;; the low + high bounds. Then TYPE= can be true only if the hashes are =.
   (values
    (and (numeric-type-equal type1 type2)
         (equalp (numeric-type-low type1) (numeric-type-low type2))
@@ -2192,7 +2198,7 @@
                           (bug "~@<(known bug #145): The type ~S is too hairy to be ~
 used for a COMPLEX component.~:@>"
                                typespec)))))))
-        (let ((ctype (specifier-type-r context typespec)))
+        (let ((ctype (specifier-type typespec context)))
           (do-complex ctype)))))
 
 ;;; If X is *, return NIL, otherwise return the bound, which must be a
@@ -3017,6 +3023,8 @@ used for a COMPLEX component.~:@>"
       (values nil t)))
 
 (def-type-translator member :list (&rest members)
+  ;; "* may appear as an argument to a MEMBER type specifier, but it indicates the
+  ;;  literal symbol *, and does not represent an unspecified value."
   (if members
       (let (ms numbers char-codes)
         (dolist (m (remove-duplicates members))
@@ -3064,6 +3072,8 @@ used for a COMPLEX component.~:@>"
 ;;; mechanically unparsed.
 (define-type-method (intersection :unparse) (type)
   (declare (type ctype type))
+  ;; If perhaps the magic intersection types were interned, then
+  ;; we could compare by EQ here instead of parsing in order to unparse.
   (or (find type '(ratio keyword compiled-function) :key #'specifier-type :test #'type=)
       `(and ,@(mapcar #'type-specifier (intersection-type-types type)))))
 
@@ -3188,7 +3198,8 @@ used for a COMPLEX component.~:@>"
                      (type-intersection accumulator union))))))))
 
 (def-type-translator and :list ((:context context) &rest type-specifiers)
-  (%type-intersection (mapcar (lambda (x) (specifier-type-r context x))
+  ;; "* is not permitted as an argument to the AND type specifier."
+  (%type-intersection (mapcar (lambda (x) (specifier-type x context 'and))
                               type-specifiers)))
 
 ;;;; union types
@@ -3298,7 +3309,17 @@ used for a COMPLEX component.~:@>"
     ((unparse-string-type type 'simple-string))
     ((unparse-string-type type 'string))
     ((type= type (specifier-type 'complex)) 'complex)
-    (t `(or ,@(mapcar #'type-specifier (union-type-types type))))))
+    (t
+     ;; If NULL is in the union, and deleting it reduces the union to either an atom
+     ;; or a list whose head is [SIMPLE-]STRING, then return (OR X NULL).
+     ;; This simplifies (OR FLOAT NULL) and other things in the above exceptions.
+     (let ((type-without-null
+            (when (find (specifier-type 'null) (union-type-types type))
+              (type-specifier (type-difference type (specifier-type 'null))))))
+       (if (or (and (atom type-without-null) type-without-null)
+               (typep type-without-null '(cons (member string simple-string))))
+           `(or ,type-without-null null)
+           `(or ,@(mapcar #'type-specifier (union-type-types type))))))))
 
 ;;; Two union types are equal if they are each subtypes of each
 ;;; other. We need to be this clever because our complex subtypep
@@ -3445,7 +3466,8 @@ used for a COMPLEX component.~:@>"
                                (type-intersection type1 t2))))))))
 
 (def-type-translator or :list ((:context context) &rest type-specifiers)
-  (let ((type (%type-union (mapcar (lambda (x) (specifier-type-r context x))
+  ;; "* is not permitted as an argument to the OR type specifier."
+  (let ((type (%type-union (mapcar (lambda (x) (specifier-type x context 'or))
                                    type-specifiers))))
     (if (union-type-p type)
         (sb-kernel::simplify-array-unions type)
@@ -3455,8 +3477,8 @@ used for a COMPLEX component.~:@>"
 
 (def-type-translator cons ((:context context)
                             &optional (car-type-spec '*) (cdr-type-spec '*))
-  (let ((car-type (single-value-specifier-type-r context car-type-spec))
-        (cdr-type (single-value-specifier-type-r context cdr-type-spec)))
+  (let ((car-type (single-value-specifier-type car-type-spec context))
+        (cdr-type (single-value-specifier-type cdr-type-spec context)))
     (make-cons-type car-type cdr-type)))
 
 (define-type-method (cons :negate) (type)
@@ -3749,7 +3771,7 @@ used for a COMPLEX component.~:@>"
                                        (dimensions '*))
   (let ((eltype (if (eq element-type '*)
                     *wild-type*
-                    (specifier-type-r context element-type))))
+                    (specifier-type element-type context))))
     (make-array-type (canonical-array-dimensions dimensions)
                      :complexp :maybe
                      :element-type eltype
@@ -3761,7 +3783,7 @@ used for a COMPLEX component.~:@>"
                                               (dimensions '*))
   (let ((eltype (if (eq element-type '*)
                     *wild-type*
-                    (specifier-type-r context element-type))))
+                    (specifier-type element-type context))))
    (make-array-type (canonical-array-dimensions dimensions)
                     :complexp nil
                     :element-type eltype

@@ -65,7 +65,7 @@
 ;;; An UNKNOWN-TYPE is a type not known to the type system (not yet
 ;;; defined). We make this distinction since we don't want to complain
 ;;; about types that are hairy but defined.
-(defstruct (unknown-type (:include hairy-type)
+(defstruct (unknown-type (:include hairy-type (%bits (pack-ctype-bits hairy)))
                          (:copier nil)))
 
 (defun maybe-reparse-specifier (type)
@@ -88,8 +88,7 @@
          (setf ,type ,new-type)
          t))))
 
-(defstruct (negation-type (:include ctype
-                                    (class-info (type-class-or-lose 'negation)))
+(defstruct (negation-type (:include ctype (%bits (pack-ctype-bits negation)))
                           (:copier nil)
                           (:constructor make-negation-type (type)))
   (type (missing-arg) :type ctype :read-only t))
@@ -118,9 +117,17 @@
                                        (subseq optional 0 (1+ last-not-rest))))
                                 rest))))
 
-;; CONTEXT is the cookie passed down from the outermost surrounding call
-;; of VALUES-SPECIFIER-TYPE. INNER-CONTEXT-KIND is an indicator of whether
-;; we are currently parsing a FUNCTION or a VALUES compound type specifier.
+;;; CONTEXT is the cookie passed down from the outermost surrounding call
+;;; of BASIC-PARSE-TYPE. INNER-CONTEXT-KIND is an indicator of whether
+;;; we are currently parsing a FUNCTION or a VALUES compound type specifier.
+
+;;; Why do we allow * for items in a list for FUNCTION type? I don't know
+;;; and I don't think we should.
+;;; VALUES is quite clear that it's not allowed. FUNCTION is less clear,
+;;; but * is not a type specifier, it is merely a way to write something in a place
+;;; where a specifier requires a positional argument that you don't want to supply,
+;;; but must supply in order to supply following arguments.
+;;; I would bet we're overly permissive.
 (defun parse-args-types (context lambda-listy-thing inner-context-kind)
   (multiple-value-bind (llks required optional rest keys)
       (parse-lambda-list
@@ -131,12 +138,15 @@
                  (:function-type (lambda-list-keyword-mask
                                   '(&optional &rest &key &allow-other-keys))))
        :silent t)
-   (flet ((parse-list (list)
-            (mapcar (lambda (x) (single-value-specifier-type-r context x))
-                    list)))
+   (labels ((parse-list (list) (mapcar #'parse-one list))
+            (parse-one (x)
+              (if (eq inner-context-kind :function-type)
+                  (single-value-specifier-type x context) ; allow *
+                  ;; "* is not permitted as an argument to the VALUES type specifier."
+                  (specifier-type x context 'values)))) ; forbid *
     (let ((required (parse-list required))
           (optional (parse-list optional))
-          (rest (when rest (single-value-specifier-type-r context (car rest))))
+          (rest (when rest (parse-one (car rest))))
           (keywords
            (collect ((key-info))
              (dolist (key keys)
@@ -151,7 +161,7 @@
                    ;; MAKE-KEY-INFO will complain if KWD is not a symbol.
                    ;; That's good enough - we don't need an extra check here.
                    :name kwd
-                   :type (single-value-specifier-type-r context (second key))))))
+                   :type (single-value-specifier-type (second key) context)))))
              (key-info))))
       (multiple-value-bind (required optional rest)
           (canonicalize-args-type-args required optional rest
@@ -159,8 +169,7 @@
         (values llks required optional rest keywords))))))
 
 (defstruct (values-type
-            (:include args-type
-                      (class-info (type-class-or-lose 'values)))
+            (:include args-type (%bits (pack-ctype-bits values)))
             (:constructor %make-values-type)
             (:predicate %values-type-p)
             (:copier nil)))
@@ -217,7 +226,7 @@
 #+sb-xc-host
 (defvar *interned-fun-types*
   (flet ((fun-type (n)
-           (!make-interned-fun-type (interned-type-hash)
+           (!make-interned-fun-type (pack-interned-ctype-bits 'function)
                                     (make-list n :initial-element *universal-type*)
                                     nil nil nil nil nil nil *wild-type*)))
     (vector (fun-type 0) (fun-type 1) (fun-type 2) (fun-type 3))))
@@ -255,8 +264,7 @@
 ;;; type specifiers used within the compiler. (It represents something
 ;;; that the compiler knows to be a constant.)
 (defstruct (constant-type
-            (:include ctype
-                      (class-info (type-class-or-lose 'constant)))
+            (:include ctype (%bits (pack-ctype-bits constant)))
             (:copier nil))
   ;; The type which the argument must be a constant instance of for this type
   ;; specifier to win.
@@ -267,10 +275,9 @@
 
 (defun interned-numeric-type (specifier &rest args)
   (apply '%make-numeric-type
-         :hash-value (interned-type-hash
-                      nil nil
-                      (when specifier
-                        (sb-vm::saetp-index-or-lose specifier)))
+         :%bits (pack-interned-ctype-bits
+                 'number nil
+                 (when specifier (sb-vm::saetp-index-or-lose specifier)))
          args))
 
 #+sb-xc-host
@@ -501,7 +508,7 @@
       (macrolet ((range (low high &optional saetp-index)
                    `(return-from make-character-set-type
                       (literal-ctype (!make-interned-character-set-type
-                                      (interned-type-hash nil nil ,saetp-index)
+                                      (pack-interned-ctype-bits 'character-set nil ,saetp-index)
                                       '((,low . ,high)))
                                      (character-set ((,low . ,high)))))))
         (let* ((pair (car pairs))
@@ -533,8 +540,8 @@
 (progn
 (defvar *interned-array-types*
   (labels ((make-1 (type-index dims complexp type)
-             (aver (= (!ctype-saetp-index type) type-index))
-             (!make-interned-array-type (interned-type-hash nil 'array)
+             (aver (= (type-saetp-index type) type-index))
+             (!make-interned-array-type (pack-interned-ctype-bits 'array)
                                         dims complexp type type))
            (make-all (element-type type-index array)
              (replace array
@@ -603,7 +610,7 @@
            (or (and (eq dimensions '*) (neq complexp t))
                (typep dimensions '(cons (eql *) null))))
       (let ((res (svref (literal-ctype-vector *interned-array-types*)
-                        (+ (* (!ctype-saetp-index element-type) 5)
+                        (+ (* (type-saetp-index element-type) 5)
                            (if (listp dimensions) 0 3)
                            (ecase complexp ((nil) 0) ((:maybe) 1) ((t) 2))))))
         (aver (eq (array-type-element-type res) element-type))
@@ -654,9 +661,8 @@
              (unless unpaired
                (macrolet ((member-type (&rest elts)
                             `(literal-ctype
-                              (!make-interned-member-type (interned-type-hash)
-                                                          (xset-from-list ',elts)
-                                                          nil)
+                              (!make-interned-member-type
+                               (pack-interned-ctype-bits 'member) (xset-from-list ',elts) nil)
                               (member ,@elts))))
                  (let ((elts (xset-data xset)))
                    (when (singleton-p elts)
@@ -730,7 +736,7 @@
         ;; but it improves the hit rate in the function caches.
         ((and (type= car-type *universal-type*)
               (type= cdr-type *universal-type*))
-         (literal-ctype (!make-interned-cons-type (interned-type-hash)
+         (literal-ctype (!make-interned-cons-type (pack-interned-ctype-bits 'cons)
                                                   *universal-type*
                                                   *universal-type*)
                         cons))
@@ -740,7 +746,7 @@
 ;;; A SIMD-PACK-TYPE is used to represent a SIMD-PACK type.
 #+sb-simd-pack
 (defstruct (simd-pack-type
-            (:include ctype (class-info (type-class-or-lose 'simd-pack)))
+            (:include ctype (%bits (pack-ctype-bits simd-pack)))
             (:constructor %make-simd-pack-type (element-type))
             (:copier nil))
   (element-type (missing-arg)
@@ -749,7 +755,7 @@
 
 #+sb-simd-pack-256
 (defstruct (simd-pack-256-type
-            (:include ctype (class-info (type-class-or-lose 'simd-pack-256)))
+            (:include ctype (%bits (pack-ctype-bits simd-pack-256)))
             (:constructor %make-simd-pack-256-type (element-type))
             (:copier nil))
   (element-type (missing-arg)
@@ -829,141 +835,242 @@
   ((orig equal-but-no-car-recursion)) ()
   :hash-function #'sxhash :hash-bits 10)
 
-(defvar *pending-defstruct-type*)
-(declaim (type classoid *pending-defstruct-type*))
+(declaim (inline make-type-context))
+(defstruct (type-context
+            (:constructor make-type-context
+                          (spec &optional proto-classoid (cacheable t)))
+            (:copier nil)
+            (:predicate nil))
+  (spec nil :read-only t)
+  (proto-classoid nil :read-only t)
+  (cacheable t))
 
-;;; The recursive ("-R" suffixed) entry point for this function
-;;; should be used for each nested parser invocation.
-(defun values-specifier-type-r (context type-specifier)
-  (declare (type cons context))
-  (labels ((fail (spec) ; Q: Shouldn't this signal a TYPE-ERROR ?
-             #-sb-xc-host(declare (optimize allow-non-returning-tail-call))
-             (error "bad thing to be a type specifier: ~
-                      ~/sb-impl:print-type-specifier/"
-                    spec))
-           (instance-to-ctype (x)
-             (flet ((translate (classoid)
-                      ;; Hmm, perhaps this should signal PARSE-UNKNOWN-TYPE
-                      ;; if CLASSOID is an instance of UNDEFINED-CLASSOID ?
-                      ;; Can that happen?
-                      (or (and (built-in-classoid-p classoid)
-                               (built-in-classoid-translation classoid))
-                          classoid)))
-               (cond ((classoid-p x) (translate x))
-                     ;; Avoid TYPEP on SB-MOP:EQL-SPECIALIZER and CLASS because
-                     ;; the fake metaobjects do not allow type analysis, and
-                     ;; would cause a compiler error as it tries to decide
-                     ;; whether any clause of this COND subsumes another.
-                     ;; Moreover, we don't require the host to support MOP.
-                     #-sb-xc-host
-                     ((sb-pcl::classp x) (translate (sb-pcl::class-classoid x)))
-                     #-sb-xc-host
-                     ((sb-pcl::eql-specializer-p type-specifier)
-                      ;; FIXME: these aren't always cached. Should they be?
-                      ;; It seems so, as "parsing" constructs a new object.
-                      ;; Perhaps better, the EQL specializer itself could store
-                      ;; (by memoizing, if not precomputing) a CTYPE
-                      (make-eql-type
-                       (sb-mop:eql-specializer-object type-specifier)))
-                     (t (fail x))))))
-    (when (typep type-specifier 'instance)
-      (return-from values-specifier-type-r (instance-to-ctype type-specifier)))
-    (when (atom type-specifier)
-      ;; Try to bypass the cache, which avoids using a cache line for standard
-      ;; atomic specifiers. This is a trade-off- cache seek might be faster,
-      ;; but this solves the problem that a full call to (TYPEP #\A 'FIXNUM)
-      ;; consed a cache line every time the cache missed on FIXNUM (etc).
-      (awhen (info :type :builtin type-specifier)
-        (return-from values-specifier-type-r it)))
-    (!values-specifier-type-memo-wrapper
-     (lambda ()
-       (labels
-         ((recurse (spec)
-            (prog* ((head (if (listp spec) (car spec) spec))
-                    (builtin (if (symbolp head)
-                                 (info :type :builtin head)
-                                 (return (fail spec)))))
-              (when (deprecated-thing-p 'type head)
-                (setf (cdr context) nil)
-                (signal 'parse-deprecated-type :specifier spec))
-              (when (atom spec)
-                ;; If spec is non-atomic, the :BUILTIN value is inapplicable.
-                ;; There used to be compound builtins, but not any more.
-                (when builtin (return builtin))
-                ;; Any spec that apparently refers to a defstruct form
-                ;; that's being macroexpanded should refer to that type.
-                (when (boundp '*pending-defstruct-type*)
-                  (let ((classoid *pending-defstruct-type*))
-                    (when (eq (classoid-name classoid) spec)
-                      (setf (cdr context) nil) ; don't cache
-                      (return classoid))))
-                (case (info :type :kind spec)
-                  (:instance (return (find-classoid spec)))
-                  (:forthcoming-defclass-type (go unknown))))
-              ;; Expansion brings up an interesting question - should the cache
-              ;; contain entries for intermediary types? Say A -> B -> REAL.
-              ;; As it stands, we cache the ctype corresponding to A but not B.
-              (awhen (info :type :expander head)
-                (when (listp it) ; The function translates directly to a CTYPE.
-                  (return (or (funcall (car it) context spec) (fail spec))))
-                ;; The function produces a type expression.
-                (let ((expansion (funcall it (ensure-list spec))))
-                  (return (if (typep expansion 'instance)
-                              (instance-to-ctype expansion)
-                              (recurse expansion)))))
-              ;; If the spec is (X ...) and X has neither a translator
-              ;; nor expander, and is a builtin, such as FIXNUM, fail now.
-              ;; But - see FIXME at top - it would be consistent with
-              ;; DEFTYPE to reject spec only if not a singleton.
-              (when builtin (return (fail spec)))
-              ;; SPEC has a legal form, so return an unknown type.
-              (signal 'parse-unknown-type :specifier spec)
-             UNKNOWN
-              (setf (cdr context) nil)
-              (return (make-unknown-type :specifier spec)))))
-        (let ((result (recurse (uncross type-specifier))))
-          (if (cdr context) ; cacheable
-              result
-              ;; (The RETURN-FROM here inhibits caching; this makes sense
-              ;; not only from a compiler diagnostics point of view,
-              ;; but also for proper workingness of VALID-TYPE-SPECIFIER-P.
-              (return-from values-specifier-type-r result)))))
-     type-specifier)))
+;;; Maintain a table of symbols designating unknown types that have any references
+;;; to them, making it easy to inquire whether such things exist. This is at a lower
+;;; layer than the parser cache - it's a cache of the constructor itself - so we'll
+;;; sitll signal that an unknown specifier is unknown on each reparse of the same.
+;;; But as long as any reference enlivens the relevant CTYPE, we'll return that object.
+(defglobal **unknown-type-atoms**
+    ;; I think it's safe to say that if the host is SBCL, we can employ a weak table.
+    ;; SBCL has had weak tables since Sep 2006 (git rev 1479483c5f).
+    ;; For other hosts, just use an ordinary hash-table.
+    ;; This table isn't specified as synchronized because we need to wrap the lock
+    ;; around a read/modify/write. GETHASH and PUTHASH can't do that themselves.
+    ;; Not that it would matter anyway - weak tables are always synchronized.
+    (let ((weakness #+(or (not sb-xc-host) host-quirks-sbcl) '(:weakness :value)))
+      (apply #'make-hash-table :test 'eq weakness)))
+
+;;; Parsing of type specifiers comes in many variations:
+;;;  SINGLE-VALUE-SPECIFIER-TYPE:
+;;;    disallow VALUES even if single value, but allow *
+;;;  SPECIFIER-TYPE:
+;;;    disallow (VALUES ...) even if single value, and disallow *
+;;;  VALUES-SPECIFIER-TYPE:
+;;;    allow VALUES and *
+;;; TYPE-OR-NIL-IF-UNKNOWN:
+;;;    like SPECIFIER-TYPE, but return NIL if contains unknown
+;;; all the above are funneled through BASIC-PARSE-TYPESPEC.
+
+;;; The recursive %PARSE-TYPE function is used for nested invocations
+;;; of type spec parsing, passing the outermost context through on each call.
+;;; Callers should use the BASIC-PARSE-TYPESPEC interface.
+
+;;; Hint for when you bork this and/or bork the :UNPARSE methods - do:
+;;; (remove-method #'print-object (find-method #'print-object nil
+;;;    (list (find-class 'ctype) (find-class 't))))
+;;; so that 'backtrace' doesn't encounter an infinite chain of errors.
+
+(macrolet ((fail (spec)
+             `(error "bad thing to be a type specifier: ~/sb-impl:print-type-specifier/"
+                     ,spec)))
+(defun %parse-type (spec context)
+  (declare (type type-context context))
+  (prog* ((head (if (listp spec) (car spec) spec))
+          (builtin (if (symbolp head)
+                       (info :type :builtin head)
+                       (return (fail spec)))))
+    (when (deprecated-thing-p 'type head)
+      (setf (type-context-cacheable context) nil)
+      (signal 'parse-deprecated-type :specifier spec))
+    (when (atom spec)
+      ;; If spec is non-atomic, the :BUILTIN value is inapplicable.
+      ;; There used to be compound builtins, but not any more.
+      (when builtin (return builtin))
+      ;; Any spec that apparently refers to a defstruct form
+      ;; that's being macroexpanded should refer to that type.
+      (awhen (type-context-proto-classoid context)
+        (when (eq (classoid-name it) spec) (return it)))
+      (case (info :type :kind spec)
+       (:instance (return (find-classoid spec)))
+       (:forthcoming-defclass-type (go unknown))))
+    ;; Expansion brings up an interesting question - should the cache
+    ;; contain entries for intermediary types? Say A -> B -> REAL.
+    ;; As it stands, we cache the ctype corresponding to A but not B.
+    (awhen (info :type :expander head)
+      (when (listp it) ; The function translates directly to a CTYPE.
+        (return (or (funcall (car it) context spec) (fail spec))))
+      ;; The function produces a type expression.
+      (let ((expansion (funcall it (ensure-list spec))))
+        (return (if (typep expansion 'instance)
+                    (basic-parse-typespec expansion context)
+                    (%parse-type expansion context)))))
+    ;; If the spec is (X ...) and X has neither a translator
+    ;; nor expander, and is a builtin, such as FIXNUM, fail now.
+    ;; But - see FIXME at top - it would be consistent with
+    ;; DEFTYPE to reject spec only if not a singleton.
+    (when builtin (return (fail spec)))
+    ;; SPEC has a legal form, so return an unknown type.
+    (signal 'parse-unknown-type :specifier spec)
+  UNKNOWN
+    (setf (type-context-cacheable context) nil)
+    (return (if (atom spec)
+                (let ((table **unknown-type-atoms**))
+                  (sb-thread::with-recursive-system-lock ((sb-impl::hash-table-lock table))
+                    (or (gethash spec table)
+                        (progn #+sb-xc-host
+                               (when *compile-print*
+                                 (format t "~&; NEW UNKNOWN-TYPE ~S~%" spec))
+                               (setf (gethash spec table)
+                                     (make-unknown-type :specifier spec))))))
+                (make-unknown-type :specifier spec)))))
+
+;;; BASIC-PARSE-TYPESPEC can grok some simple cases that involve turning an object
+;;; used as a type specifier into an internalized type object (which might be
+;;; the selfsame object, in the case of a CLASSOID).
+(defun basic-parse-typespec (type-specifier context)
+  (declare (type type-context context))
+  (when (typep type-specifier 'instance)
+    ;; An instance never needs the type parser cache, because it almost always
+    ;; represents itself or a slot in itself.
+    (flet ((classoid-to-ctype (classoid)
+             ;; A few classoids have translations,
+             ;; e.g. the classoid CONS is a CONS-TYPE.
+             ;; Hmm, perhaps this should signal PARSE-UNKNOWN-TYPE
+             ;; if CLASSOID is an instance of UNDEFINED-CLASSOID ?
+             ;; Can that happen?
+             (or (and (built-in-classoid-p classoid)
+                      (built-in-classoid-translation classoid))
+                 classoid)))
+      (return-from basic-parse-typespec
+       (cond ((classoid-p type-specifier) (classoid-to-ctype type-specifier))
+             ;; Avoid TYPEP on SB-MOP:EQL-SPECIALIZER and CLASS because
+             ;; the fake metaobjects do not allow type analysis, and
+             ;; would cause a compiler error as it tries to decide
+             ;; whether any clause of this COND subsumes another.
+             ;; Moreover, we don't require the host to support MOP.
+             #-sb-xc-host
+             ((sb-pcl::classp type-specifier)
+              ;; A CLOS class is translated to its CLASSOID, or the classoid's translation.
+              (classoid-to-ctype (sb-pcl::class-classoid type-specifier)))
+             #-sb-xc-host
+             ((sb-pcl::eql-specializer-p type-specifier)
+              ;; EQL specializers are are seldom used and not 100% portable,
+              ;; though they are part of the AMOP.
+              ;; See https://sourceforge.net/p/sbcl/mailman/message/11217378/
+              ;; We implement the notion that an EQL-SPECIALIZER has-a CTYPE.
+              ;; You might think that a cleverer way would be to say that
+              ;; EQL-SPECIALIZER is-a CTYPE, i.e. incorporating EQL-SPECIALIZER
+              ;; objects into the type machinary. Well, that's a problem -
+              ;; it would mess up admissibility of the TYPE= optimization.
+              ;; We don't want to create another way of representing
+              ;; the type NULL = (MEMBER NIL), for example.
+              (sb-pcl::eql-specializer-to-ctype type-specifier))
+             (t (fail type-specifier))))))
+  (when (atom type-specifier)
+    ;; Try to bypass the cache, which avoids using a cache line for standard
+    ;; atomic specifiers. This is a trade-off- cache seek might be faster,
+    ;; but this solves the problem that a full call to (TYPEP #\A 'FIXNUM)
+    ;; consed a cache line every time the cache missed on FIXNUM (etc).
+    (awhen (info :type :builtin type-specifier)
+        (return-from basic-parse-typespec it)))
+
+  ;; If CONTEXT was non-cacheable as supplied, the cache is bypassed
+  ;; for any nested lookup, and we don't insert the result.
+  (if (not (type-context-cacheable context))
+      (%parse-type (uncross type-specifier) context)
+      ;; Otherwise, try for a cache hit first, and usually update the cache.
+      (!values-specifier-type-memo-wrapper
+       (lambda ()
+         (let ((answer (%parse-type (uncross type-specifier) context)))
+           (if (type-context-cacheable context)
+               answer
+                 ;; Lookup was cacheable, but result isn't.
+                 ;; Non-caching ensures that we see every occurrence of an unknown
+                 ;; type no matter how deeply nested it is in the expression.
+                 ;; e.g. (OR UNKNOWN-FOO CONS) and (OR INTEGER UNKNOWN-FOO)
+                 ;; should both signal the PARSE-UNKNOWN condition, which would
+                 ;; not happen if the first cached UNKNOWN-FOO.
+
+                 ;; During make-host-2 I'm seeing the types &OPTIONAL-AND-&KEY-IN-LAMBDA-LIST,
+                 ;; SIMPLE-ERROR, DISASSEM-STATE as non-cacheable,
+                 ;; and much, much more during make-target-2.
+                 ;; The condition types are obvious, because we mention them before
+                 ;; defining them.
+                 ;; DISASSEM-STATE comes from building **TYPE-SPEC-INTERR-SYMBOLS**
+                 ;; where we have a fixed list of types which get assigned single-byte
+                 ;; error codes.
+               (progn
+                   #+nil
+                   (unless (type-context-cacheable context)
+                     (format t "~&non-cacheable: ~S ~%" type-specifier))
+                   (return-from basic-parse-typespec answer)))))
+       type-specifier)))
+) ; end MACROLET
+
+;;; This takes no CONTEXT (which implies lack of recursion) because
+;;; you can't reasonably place a VALUES type inside another type.
 (defun values-specifier-type (type-specifier)
-  (dx-let ((context (cons type-specifier t)))
-    (values-specifier-type-r context type-specifier)))
+  (dx-let ((context (make-type-context type-specifier)))
+    (basic-parse-typespec type-specifier context)))
 
 ;;; This is like VALUES-SPECIFIER-TYPE, except that we guarantee to
 ;;; never return a VALUES type.
-(defun specifier-type-r (context type-specifier)
-  (let ((ctype (values-specifier-type-r context type-specifier)))
+;;; CONTEXT is either an instance of TYPE-CONTEXT or NIL.
+;;; SUBCONTEXT is a symbol denoting the head of the current expression, or NIL.
+(defun specifier-type (type-specifier &optional context subcontext)
+  (let ((ctype
+         (if context
+             (basic-parse-typespec type-specifier context)
+             (dx-let ((context (make-type-context type-specifier)))
+               (basic-parse-typespec type-specifier context)))))
     (when (values-type-p ctype)
-      (error "VALUES type illegal in this context:~% ~
+      ;; We have to see how it was spelled to give an intelligent message.
+      ;; If it's instance of VALUES-TYPE, then it was spelled as VALUES
+      ;; whereas if it isn't, the user either spelled it as (VALUES) or *.
+      ;; The case where this heuristic doesn't work is a DEFTYPE that expands
+      ;; to *, but that's not worth worrying about.
+      (cond ((or (%values-type-p ctype) (consp type-specifier))
+             (error "VALUES type illegal in this context:~% ~
                ~/sb-impl:print-type-specifier/"
-             type-specifier))
+                  type-specifier))
+            (subcontext
+             (error "* is not permitted as an argument to the ~S type specifier"
+                    subcontext))
+            (t
+             (error "* is not permitted as a type specifier~@[ in the context ~S~]"
+                    ;; If the entire surrounding context is * then there's not much
+                    ;; else to say. Otherwise, show the original expression.
+                    (when (and context (neq (type-context-spec context) '*))
+                      (type-context-spec context))))))
     ctype))
-(defun specifier-type (type-specifier)
-  (dx-let ((context (cons type-specifier t)))
-    (specifier-type-r context type-specifier)))
+
+(defun single-value-specifier-type (x &optional context)
+  (if (eq x '*)
+      *universal-type*
+      (specifier-type x context)))
 
 ;;; Parse TYPE-SPECIFIER, returning NIL if any sub-part of it is unknown
 (defun type-or-nil-if-unknown (type-specifier &optional allow-values)
-  (dx-let ((context (cons type-specifier t)))
-    (let ((result (values-specifier-type-r context type-specifier)))
-      (when (and (not allow-values) (values-type-p result))
-        (error "VALUES type illegal in this context:~%  ~S" type-specifier))
+  (dx-let ((context (make-type-context type-specifier)))
+    (let ((result (if allow-values
+                      (basic-parse-typespec type-specifier context)
+                      (specifier-type type-specifier context))))
       ;; If it was non-cacheable, either it contained a deprecated type
       ;; or unknown type, or was a pending defstruct definition.
-      (if (and (not (cdr context)) (contains-unknown-type-p result))
+      (if (and (not (type-context-cacheable context))
+               (contains-unknown-type-p result))
           nil
           result))))
-
-(defun single-value-specifier-type-r (context x)
-  (if (eq x '*) *universal-type* (specifier-type-r context x)))
-(defun single-value-specifier-type (x)
-  (if (eq x '*)
-      *universal-type*
-      (specifier-type x)))
 
 (defun typexpand-1 (type-specifier &optional env)
   "Takes and expands a type specifier once like MACROEXPAND-1.

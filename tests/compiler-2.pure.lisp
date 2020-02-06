@@ -2588,6 +2588,9 @@
     (((expt 2 (1- sb-vm:n-word-bits)) #xFFFFFF) -1)
     (((1- (expt 2 (1- sb-vm:n-word-bits))) #xFFFFFF) -16777216)))
 
+#+#.(cl:if (cl:gethash 'sb-c:multiway-branch-if-eq sb-c::*backend-template-names*)
+           '(:and)
+           '(:or))
 (with-test (:name :typecase-to-case-preserves-type)
   (let ((f (checked-compile
             '(lambda (x)
@@ -2656,3 +2659,11 @@
     ((44 nil nil) 45)
     ((3 2 1) 0.0)
     ((30 2 nil) 30)))
+
+(with-test (:name :if-eq-optimization-consistency)
+  (let ((sb-c::*check-consistency* t))
+    (checked-compile-and-assert
+     ()
+     `(lambda ()
+        (eval (and (if (eval 0) (eval 0) (eval 0)) t)))
+     (() t))))

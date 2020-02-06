@@ -121,12 +121,13 @@
                (type-union (specifier-type 'vector) (specifier-type 'list))))
 (assert (type= (specifier-type 'list)
                (type-union (specifier-type 'cons) (specifier-type 'list))))
-(assert (not (csubtypep (type-union (specifier-type 'list)
-                                    (specifier-type '(satisfies foo)))
-                        (specifier-type 'list))))
-(assert (csubtypep (specifier-type 'list)
-                   (type-union (specifier-type 'list)
-                               (specifier-type '(satisfies foo)))))
+(let ((sb-kernel::*xtypep-uncertainty-action* nil))
+  (assert (not (csubtypep (type-union (specifier-type 'list)
+                                      (specifier-type '(satisfies foo)))
+                          (specifier-type 'list))))
+  (assert (csubtypep (specifier-type 'list)
+                     (type-union (specifier-type 'list)
+                                 (specifier-type '(satisfies foo))))))
 
 ;;; Identities should be identities.
 (dolist (type-specifier '(nil
@@ -227,22 +228,14 @@
 (assert (type= (type-intersection (specifier-type 'number)
                                   (specifier-type 'integer))
                (specifier-type 'integer)))
-(assert (null (type-intersection2 (specifier-type 'symbol)
-                                  (specifier-type '(satisfies foo)))))
-(assert (intersection-type-p (specifier-type '(and symbol (satisfies foo)))))
-;; the target compiler returns NIL for this CTYPEP call involving KEYWORDP.
-;; therefore the cross-compiler should too.
-(assert (not (ctypep :x86 (specifier-type '(satisfies keywordp)))))
-(let* ((info (sb-int:info :function :info 'keywordp))
-       (attributes (sb-c::fun-info-attributes info)))
-  (unwind-protect
-       (progn
-         (setf (sb-c::fun-info-attributes info)
-               (logior attributes (sb-c::ir1-attributes sb-c::foldable)))
-         (assert (ctypep :x86 (specifier-type '(satisfies keywordp)))))
-    (setf (sb-c::fun-info-attributes info) attributes)))
-(assert (not (type= (specifier-type '(member :x86))
-                    (specifier-type '(and (member :x86) (satisfies keywordp))))))
+(let ((sb-kernel::*xtypep-uncertainty-action* nil))
+  (assert (null (type-intersection2 (specifier-type 'symbol)
+                                    (specifier-type '(satisfies foo)))))
+  (assert (intersection-type-p (specifier-type '(and symbol (satisfies foo))))))
+(assert (ctypep :x86 (specifier-type '(satisfies keywordp))))
+(assert (not (ctypep 'cons (specifier-type '(satisfies keywordp)))))
+(assert (type= (specifier-type '(member :x86))
+               (specifier-type '(and (member :x86) (satisfies keywordp)))))
 #+nil
 (let* ((type1 (specifier-type '(member :x86)))
        (type2 (specifier-type '(or keyword null)))
@@ -351,11 +344,12 @@
   (assert (not yes))
   (assert win))
 ;; Used to run out of stack.
-(multiple-value-bind (yes win)
-    (handler-bind ((sb-kernel::cross-type-giving-up #'muffle-warning))
-      (subtypep 'null '(or unk0 unk1)))
-  (assert (not yes))
-  (assert (not win)))
+(let ((sb-kernel::*xtypep-uncertainty-action* nil))
+  (multiple-value-bind (yes win)
+      (handler-bind ((sb-kernel::cross-type-giving-up #'muffle-warning))
+        (subtypep 'null '(or unk0 unk1)))
+    (assert (not yes))
+    (assert (not win))))
 
 (multiple-value-bind (yes win)
     (subtypep '(and function instance) nil)
@@ -422,3 +416,7 @@
              sb-vm::fp-complex-single-zero-sc-number))
   (assert (= (sb-vm::immediate-constant-sc (complex $0.0d0 $0.0d0))
              sb-vm::fp-complex-double-zero-sc-number)))
+
+;;; Unparse a union of (up to) 4 things depending on :sb-unicode as 2 things.
+(assert (equal (type-specifier (specifier-type '(or string null)))
+               '(or string null)))

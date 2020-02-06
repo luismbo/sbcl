@@ -34,7 +34,6 @@
 
 (in-package "SB-IMPL")
 
-#-no-ansi-print-object
 (defmethod print-object ((x meta-info) stream)
   (print-unreadable-object (x stream)
     (format stream "~S ~S, ~D" (meta-info-category x) (meta-info-kind x)
@@ -281,8 +280,9 @@
 (define-info-type (:function :deprecated)
   :type-spec (or null deprecation-info))
 
-(declaim (ftype (sfunction (t) ctype)
-                specifier-type ctype-of sb-kernel::ctype-of-array))
+;;; Why are these here? It seems like the wrong place.
+(declaim (ftype (sfunction (t &optional t symbol) ctype) specifier-type)
+         (ftype (sfunction (t) ctype) ctype-of sb-kernel::ctype-of-array))
 
 ;;; the ASSUMED-TYPE for this function, if we have to infer the type
 ;;; due to not having a declaration or definition

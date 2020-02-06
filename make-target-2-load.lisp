@@ -45,9 +45,10 @@
            :SB-DYNAMIC-CORE
            ;; Can't use s-l-a-d :compression safely without it
            :SB-CORE-COMPRESSION
-           ;; Features that are also in *features-potentially-affecting-fasl-format*
+           ;; Features that are also in *FEATURES-POTENTIALLY-AFFECTING-FASL-FORMAT*
            ;; and would probably mess up something if made non-public,
            ;; though I don't think they should all be public.
+           :MSAN
            :SB-SAFEPOINT :SB-SAFEPOINT-STRICTLY
            :SB-THREAD :SB-UNICODE
            ;; Things which (I think) at least one person has requested be kept around
@@ -407,7 +408,7 @@ Please check that all strings which were not recognizable to the compiler
           (if winp (unintern symbol "CL-USER") (return)))))
 
 (setq sb-c:*compile-to-memory-space* :auto)
-(when (find-package "SB-FASTEVAL") (setq sb-ext:*evaluator-mode* :interpret))
+(when (find-package "SB-INTERPRETER") (setq sb-ext:*evaluator-mode* :interpret))
 ;; folding doesn't actually do anything unless the backend supports it,
 ;; but the interface exists no matter what.
 (sb-ext:fold-identical-code :aggressive t :preserve-docstrings t)

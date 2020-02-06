@@ -137,7 +137,6 @@
  ("src/code/early-fasl" :c-headers)
 
  ("src/code/defbangstruct" :c-headers)
- ("src/code/early-thread" :c-headers)
  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
  ;;; basic machinery for the target Lisp. Note that although most of these
  ;;; files are flagged :NOT-HOST, a few might not be.
@@ -171,16 +170,15 @@
  ;; 'info-vector' is needed at least as early as 'fdefinition' so that the
  ;; inlined INFO-VECTOR-FDEFINITION is available to %COERCE-CALLABLE-TO-FUN.
  ("src/code/signal" :not-host)
+ ("src/code/sysmacs" :not-host)
  ("src/code/target-lfhash" :not-host)
  ("src/compiler/info-vector" :c-headers)
  ("src/compiler/globaldb" :c-headers)
  ("src/compiler/generic/vm-array" :c-headers)
+ ("src/code/string-hash" :c-headers)
  ("src/code/primordial-type" :c-headers)
  ("src/code/early-classoid" :c-headers)
  ("src/code/early-alieneval" :c-headers)  ; for funs and vars needed at build and run time
-
- ("src/code/sysmacs" :not-host)
-
  ("src/code/target-error" :not-host)
 
  ;; "src/code/toplevel.lisp" is the first to need this. It's generated
@@ -188,6 +186,9 @@
  ("output/stuff-groveled-from-headers" :not-host)
 
  ("src/code/cold-error"  :not-host)
+ ;; Define at most one INTERPRETED-FUNCTION type based on target features
+ #+sb-eval ("src/code/early-full-eval" :not-host)
+ #+sb-fasteval ("src/interpreter/function" :not-host)
  ("src/code/fdefinition" :not-host)
 
  ("src/code/weak"          :not-host)
@@ -204,13 +205,9 @@
 
  ("src/code/early-float")
  ("src/pcl/early-low" :not-host)
-  ;; Define at most one INTERPRETED-FUNCTION type based on target features
- #+sb-eval ("src/code/early-full-eval" :not-host)
- #+sb-fasteval ("src/interpreter/function" :not-host)
  ("src/code/pred" :not-host)
  ("src/compiler/generic/pinned-objects" :not-host)
 
- ("src/code/string-hash" :c-headers)
  ("src/code/target-sxhash" :not-host) ; needs most-fooative-foo-float constants
 
  ("src/code/list"   :not-host)
@@ -410,12 +407,7 @@
  ;; "code/late-type", and SB-XC:TYPEP, defined in "code/cross-type",
  ;; and SPECIALIZE-ARRAY-TYPE, defined in "compiler/generic/vm-type",
  ;; and SB-XC:PROCLAIM, defined in "src/compiler/proclaim"
-
- ;; KLUDGE: do we still need the special hack for cmucl?
- ("src/code/defstruct"  :c-headers
-  #.(cl:if (and (cl:find :sb-xc-host cl:*features*)
-                (cl:find :cmucl cl:*features*))
-        :ignore-failure-p))
+ ("src/code/defstruct"  :c-headers)
  ("src/code/target-defstruct" :not-host)
 
  ;; ALIEN-VALUE has to be defined as a class (done by DEFSTRUCT
@@ -483,11 +475,7 @@
   #.(cl:if (and (cl:find :sb-xc-host cl:*features*)
                 (cl:find :abcl cl:*features*))
         :ignore-failure-p))
- ;; KLUDGE: do we still need the special hack for cmucl?
- ("src/compiler/ir1util"
-  #.(cl:if (and (cl:find :sb-xc-host cl:*features*)
-                (cl:find :cmucl cl:*features*))
-        :ignore-failure-p))
+ ("src/compiler/ir1util")
  ("src/compiler/callable-args")
  ("src/compiler/ir1opt")
  ("src/compiler/loop")
