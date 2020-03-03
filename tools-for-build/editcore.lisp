@@ -15,9 +15,6 @@
 ;;;; provided with absolutely no warranty. See the COPYING and CREDITS
 ;;;; files for more information.
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (require :sb-posix)) ; for mmap
-
 (load (merge-pathnames "corefile.lisp" *load-pathname*))
 
 (defpackage "SB-EDITCORE"
@@ -46,12 +43,6 @@
 
 (eval-when (:execute)
   (setq *evaluator-mode* :compile))
-
-(defconstant core-magic
-  (logior (ash (char-code #\S) 24)
-          (ash (char-code #\B) 16)
-          (ash (char-code #\C) 8)
-          (char-code #\L)))
 
 ;;; Some high address that won't conflict with any of the ordinary spaces
 ;;; It's more-or-less arbitrary, but we must be able to discern whether a
@@ -596,7 +587,7 @@
                                       (signed-sap-ref-8 sap (+ offs 2))
                                       (reg-name (get-gpr :qword reg)))))
                    (push (list* (1- (dstate-cur-offs dstate)) 8 "mov" text) list)))
-                ((and (eq (inst-name inst) '|call|) ; match "call qword ptr [addr]"
+                ((and (eq (inst-name inst) 'call) ; match "call qword ptr [addr]"
                       (eql (ldb (byte 24 0) (sap-ref-32 sap offs))
                            #x2514FF)) ; ModRM+SIB encodes disp32, no base, no index
                  ;; This form of call instruction is employed for asm routines when
@@ -1603,16 +1594,21 @@
                 (unwind-protect
                      (progn
                        (setq ,sap-var
-                             (sb-posix:mmap nil
-                                            (* ,npages +backend-page-bytes+)
-                                            (logior sb-posix:prot-read sb-posix:prot-write)
-                                            sb-posix:map-private
-                                            (sb-sys:fd-stream-fd ,stream)
-                                            ;; Skip the core header
-                                            (+ ,start +backend-page-bytes+)))
+                             (alien-funcall
+                              (extern-alien "load_core_bytes"
+                                            (function system-area-pointer
+                                                      int int unsigned unsigned))
+                              (sb-sys:fd-stream-fd ,stream)
+                              ;; Skip the core header
+                              (+ ,start +backend-page-bytes+)
+                              0 ; place it anywhere
+                              (* ,npages +backend-page-bytes+)))
                        ,@body)
                   (when ,sap-var
-                    (sb-posix:munmap ,sap-var (* ,npages +backend-page-bytes+)))))))
+                    (alien-funcall
+                     (extern-alien "os_invalidate"
+                                   (function void system-area-pointer unsigned))
+                     ,sap-var (* ,npages +backend-page-bytes+)))))))
 
 ;;; Given a native SBCL '.core' file, or one attached to the end of an executable,
 ;;; separate it into pieces.

@@ -358,10 +358,9 @@
                         ,(transform-numeric-bound-test n-imag type
                                                        base)))))))))
 
-;;; Do the source transformation for a test of a hairy type. AND,
-;;; SATISFIES and NOT are converted into the obvious code. We convert
-;;; unknown types to %TYPEP, emitting an efficiency note if
-;;; appropriate.
+;;; Do the source transformation for a test of a hairy type.
+;;; SATISFIES is converted into the obvious. Otherwise, we convert
+;;; to CACHED-TYPEP an possibly print an efficiency note.
 (defun source-transform-hairy-typep (object type)
   (declare (type hairy-type type))
   (let ((spec (hairy-type-specifier type)))
@@ -392,11 +391,7 @@
                                (not (fun-lexically-notinline-p name)))
                           `(,expansion ,object)
                           `(funcall (global-function ,name) ,object))
-                     t nil)))
-             ((not and)
-              `(,(first spec) ,@(mapcar (lambda (x)
-                                          `(typep ,object ',x))
-                                        (rest spec)))))))))
+                     t nil))))))))
 
 (defun source-transform-negation-typep (object type)
   (declare (type negation-type type))
@@ -1313,7 +1308,7 @@
         tval)))))
 
 (deftransform #+64-bit unsigned-byte-64-p #-64-bit unsigned-byte-32-p
-  ((value) (fixnum))
+  ((value) (fixnum) * :important nil)
   `(>= value 0))
 
 (deftransform %other-pointer-p ((object))

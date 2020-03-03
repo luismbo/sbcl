@@ -31,12 +31,6 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (use-package "SB-COREFILE")) ; not SB-COREFILE
 
-(defconstant core-magic
-  (logior (ash (sb-xc:char-code #\S) 24)
-          (ash (sb-xc:char-code #\B) 16)
-          (ash (sb-xc:char-code #\C) 8)
-          (sb-xc:char-code #\L)))
-
 (defun round-up (number size)
   "Round NUMBER up to be an integral multiple of SIZE."
   (* size (ceiling number size)))
@@ -1561,6 +1555,12 @@ core and return a descriptor to it."
 ;;; It might be nice to put NIL on a readonly page by itself to prevent unsafe
 ;;; code from destroying the world with (RPLACx nil 'kablooey)
 (defun make-nil-descriptor ()
+  ;; 8 words are placed prior to NIL to contain the 'struct alloc_region'.
+  ;; See also (DEFCONSTANT NIL-VALUE) in early-objdef.
+  #+(and gencgc (not sb-thread))
+  (allocate-vector #-64-bit sb-vm:simple-array-signed-byte-32-widetag
+                   #+64-bit sb-vm:simple-array-signed-byte-64-widetag
+                   6 6 *static*)
   (let* ((des (allocate-header+object *static* sb-vm:symbol-size 0))
          (nil-val (make-descriptor (+ (descriptor-bits des)
                                      (* 2 sb-vm:n-word-bytes)
@@ -1695,9 +1695,6 @@ core and return a descriptor to it."
             (make-descriptor (ash *genesis-tls-counter* sb-vm:word-shift)))
 
   (cold-set '*code-serialno* (make-fixnum-descriptor (1+ *code-serialno*)))
-
-  (dolist (symbol sb-impl::*cache-vector-symbols*)
-    (cold-set symbol *nil-descriptor*))
 
   ;; Put the C-callable fdefns into the static-fdefn vector if #+immobile-code.
   #+immobile-code
@@ -2949,6 +2946,10 @@ core and return a descriptor to it."
             (setf prev-priority priority))
           (when (minusp value)
             (error "stub: negative values unsupported"))
+          ;; KLUDGE: x86 system assembler can not parse "U" on an integer constant.
+          ;; It makes no difference for STATIC_SPACE_START, so just remove the suffix.
+          ;; See comment in src/runtime/x86-assem.S about how to fix this.
+          #+x86 (when (string= name "STATIC_SPACE_START") (setq suffix ""))
           (format t "#define ~A ~A~A /* 0x~X ~@[ -- ~A ~]*/~%" name value suffix value doc))))
     (terpri))
 
@@ -3175,10 +3176,7 @@ core and return a descriptor to it."
             (if *static*                ; if we ran GENESIS
               ;; We actually ran GENESIS, use the real value.
               (descriptor-bits (cold-intern symbol))
-              ;; We didn't run GENESIS, so guess at the address.
-              (+ sb-vm:static-space-start
-                 sb-vm:n-word-bytes
-                 sb-vm:other-pointer-lowtag
+              (+ sb-vm:nil-value
                  (if symbol (sb-vm:static-symbol-offset symbol) 0)))))
   #+sb-thread
   (dolist (binding sb-vm::!per-thread-c-interface-symbols)
@@ -3220,9 +3218,7 @@ core and return a descriptor to it."
               ;; We actually ran GENESIS, use the real value.
               (descriptor-bits (cold-fdefinition-object symbol))
               ;; We didn't run GENESIS, so guess at the address.
-              (+ sb-vm:static-space-start
-                 sb-vm:n-word-bytes
-                 sb-vm:other-pointer-lowtag
+              (+ sb-vm:nil-value
                  (* (length sb-vm:+static-symbols+)
                     (sb-vm:pad-data-block sb-vm:symbol-size))
                  (* index (sb-vm:pad-data-block sb-vm:fdefn-size)))))))
@@ -3265,9 +3261,10 @@ core and return a descriptor to it."
                       "classoids"
                       "layouts"
                       "type specifiers"
-                      "symbols")))
+                      "symbols"
+                      #+sb-dynamic-core "linkage table")))
       (dotimes (i (length sections))
-        (format t "~4<~@R.~> ~A~%" (1+ i) (nth i sections))))
+        (format t "~4<~@R~>. ~A~%" (1+ i) (nth i sections))))
     (format t "=================~2%")
     (format t "I. assembler routines defined in core image:~2%")
     (dolist (routine *cold-assembler-routines*)
@@ -3347,9 +3344,21 @@ III. initially undefined function references (alphabetically):
           (sort (%hash-table-alist *ctype-cache*) #'<
                 :key (lambda (x) (descriptor-bits (cdr x))))))
 
-    (format t "~%~|~%VII. symbols (numerically):~2%")
-    (mapc (lambda (cell) (format t "~X: ~S~%" (car cell) (cdr cell)))
-          (sort (%hash-table-alist *cold-symbols*) #'< :key #'car))
+  (format t "~%~|~%VII. symbols (numerically):~2%")
+  (mapc (lambda (cell) (format t "~X: ~S~%" (car cell) (cdr cell)))
+        (sort (%hash-table-alist *cold-symbols*) #'< :key #'car))
+
+  #+sb-dynamic-core
+  (progn
+    (format t "~%~|~%VIII. linkage table:~2%")
+    (dolist (entry (sort (sb-int:%hash-table-alist *cold-foreign-symbol-table*)
+                         #'< :key #'cdr))
+      (let ((name (car entry)))
+        (format t " ~:[   ~;(D)~] ~8x = ~a~%"
+                (listp name)
+                (+ sb-vm:linkage-table-space-start
+                   (* (cdr entry) sb-vm:linkage-table-entry-size))
+                (car (ensure-list name))))))
 
   (values))
 
@@ -3690,6 +3699,10 @@ III. initially undefined function references (alphabetically):
         (cold-set symbol (list-to-core (nreverse (symbol-value symbol))))
         (makunbound symbol)) ; so no further PUSHes can be done
 
+      ;;; Order all trivial methods so that the first one whose guard
+      ;;; returns T is the most specific method. LAYOUT-DEPTHOID is a valid
+      ;;; sort key for this because we don't have multiple inheritance in
+      ;;; the system object type lattice.
       (cold-set
        'sb-pcl::*!trivial-methods*
        (list-to-core
@@ -3705,12 +3718,13 @@ III. initially undefined function references (alphabetically):
                                       :key (lambda (method)
                                              (class-depthoid (car method))))
                       collect
-                      (cold-list (cold-intern
-                                  (and (null qual) (predicate-for-specializer class)))
-                                 fun
-                                 (cold-intern class)
-                                 (cold-intern qual)
-                                 lambda-list source-loc)))))))
+                      (vector-in-core
+                       (list (cold-intern
+                              (and (null qual) (predicate-for-specializer class)))
+                             (cold-intern qual)
+                             (cold-intern class)
+                             fun
+                             lambda-list source-loc))))))))
 
       ;; Tidy up loose ends left by cold loading. ("Postpare from cold load?")
       (resolve-deferred-known-funs)

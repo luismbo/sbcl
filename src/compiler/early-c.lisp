@@ -95,10 +95,17 @@
   (free-vars (make-hash-table :test 'eq) :read-only t :type hash-table)
   ;; FREE-FUNS is like FREE-VARS, only it deals with function names.
   (free-funs (make-hash-table :test 'equal) :read-only t :type hash-table)
-  ;; We use the same CONSTANT structure to represent all equal anonymous
-  ;; constants. This hashtable translates from constants to the LEAFs that
+  ;; These hashtables translate from constants to the LEAFs that
   ;; represent them.
-  (constants (make-hash-table :test 'equal) :read-only t :type hash-table))
+  ;; Table 1: one entry for each distinct constant (according to object identity)
+  (eq-constants (make-hash-table :test 'eq) :read-only t :type hash-table)
+  ;; Table 2: one hash-table entry per EQUAL constant,
+  ;; with the caveat that lookups must discriminate amongst constants that
+  ;; are EQUAL but not similar.  The value in the hash-table is a list of candidates
+  ;; (#<constant1> #<constant2> ... #<constantN>) such that CONSTANT-VALUE
+  ;; of each is EQUAL to the key for the hash-table entry, but dissimilar
+  ;; from each other. Notably, strings of different element types can't be similar.
+  (similar-constants (make-hash-table :test 'equal) :read-only t :type hash-table))
 (declaim (freeze-type ir1-namespace))
 
 (sb-impl::define-thread-local *ir1-namespace*)
@@ -353,16 +360,23 @@ the stack without triggering overflow protection.")
                         (:predicate nil)
                         (:conc-name ""))
   (fun-names-in-this-file)
+  ;; for constant coalescing across code components, and/or for situations
+  ;; where SIMILARP does not do what you want.
+  (constant-cache)
   (coverage-metadata nil :type (or (cons hash-table hash-table) null) :read-only t)
   (msan-unpoison nil :read-only t)
   (sset-counter 1 :type fixnum)
   ;; if emitting a cfasl, the fasl stream to that
   (compile-toplevel-object nil :read-only t)
-  ;; these are all historical baggage from here down,
-  ;; unused unless we ever decide to fix block compilation
+  ;; The current block compilation state.  These are initialized to
+  ;; the :Block-Compile and :Entry-Points arguments that COMPILE-FILE
+  ;; was called with.  Subsequent START-BLOCK or END-BLOCK
+  ;; declarations alter the values.
   (block-compile nil :type (member nil t :specified))
-  ;; When block compiling, used by PROCESS-FORM to accumulate top level
-  ;; lambdas resulting from compiling subforms. (In reverse order.)
+  (entry-points nil :type list)
+  ;; When block compiling, used by PROCESS-FORM to accumulate top
+  ;; level lambdas resulting from compiling subforms. (In reverse
+  ;; order.)
   (toplevel-lambdas nil :type list)
 
   ;; Bidrectional map between IR1/IR2/assembler abstractions and a corresponding

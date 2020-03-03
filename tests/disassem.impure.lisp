@@ -45,6 +45,13 @@
   (with-output-to-string (s)
     (sb-c:dis (defmethod hello ((self cons)) "here i am") s)))
 
+(with-test (:name :lp-bug-1861418)
+  (disassemble '(lambda ()
+                 (let* ((*s* 692985202))
+                   (declare (special *s*))
+                   0))
+               :stream (make-string-output-stream)))
+
 ;;; This can be used to verify that all of the instruction printers respond
 ;;; correctly (or at least, produce no characters on *standard-output*)
 ;;; when given NIL as a stream.
@@ -52,15 +59,18 @@
 ;;; then something is wrong.
 ;;; Unfortunately I think is too slow to make part of the test suite,
 ;;; which speaks to the terrible performance of our disassembler.
-#+nil
-(defun disassemble-everything (&aux (dstate (make-dstate)) (i 0))
+(in-package "SB-DISASSEM")
+(defun disassemble-everything (&optional (show-progress t)
+                               &aux (dstate (make-dstate)) (i 0))
   (declare (inline %make-segment))
-  (format t "~&Start ...  ")
-  (force-output)
+  (when show-progress
+    (format t "~&Start ...  ")
+    (force-output))
   (dolist (code (funcall 'sb-vm::list-allocated-objects :all :type sb-vm:code-header-widetag))
-    (write-char #\backspace)
-    (write-char (aref "\\|/-" (mod (incf i) 4)))
-    (force-output)
+    (when show-progress
+      (write-char #\backspace)
+      (write-char (aref "\\|/-" (mod (incf i) 4)))
+      (force-output))
     (dotimes (j (sb-kernel:code-n-entries code))
       (let* ((f (sb-kernel:%code-entry-point code j))
              (sap (sb-vm:simple-fun-entry-sap f))
@@ -76,6 +86,25 @@
                (declare (type dchunk chunk) (type instruction inst))
                (awhen (inst-printer inst)
                  (funcall it chunk inst nil dstate)
-                 (setf (dstate-operands dstate) nil)))
+                 (setf (dstate-n-operands dstate) 0)))
              seg dstate nil))))))
-  (format t " done~%"))
+  (when show-progress
+    (format t " done~%")))
+(compile 'disassemble-everything)
+
+;;; Disassembling everything takes around .8 seconds and conses ~14MB for me.
+;;; To ensure that things don't get drastically worse, assert that we're within
+;;; some fuzz factor of the expected consing. One small mistake in target-disassem
+;;; could leave the disassembler totally working, but consing 10x too much.
+(test-util:with-test (:name :disassemble-everything
+                      ;; Only the x86-64 disassembler is able to disassemble
+                      ;; with output into the dstate rather than a stream.
+                      ;; The others choke with "NIL is not of type STREAM"
+                      :skipped-on (:not (:and :x86-64 :linux)))
+  (multiple-value-bind (before after)
+      (sb-sys:without-gcing
+          (values (get-bytes-consed)
+                  (progn
+                    (disassemble-everything nil)
+                    (get-bytes-consed))))
+    (assert (< (- after before) 16000000))))

@@ -2951,3 +2951,50 @@
                                       0)
                                      0))))))))
     (assert (eql (funcall f337 17) 0))))
+
+(defstruct dump-me)
+(defmethod make-load-form ((self dump-me) &optional e)
+  (declare (notinline typep) (ignore e))
+  ;; This error in bad usage of TYPEP would cause SB-C::COMPUTE-ENTRY-INFO
+  ;; to encounter another error:
+  ;; The value
+  ;;   #<SB-FORMAT::FMT-CONTROL "bad thing to be a type specifier: ~/SB-IMPL:PRINT-TYPE-SPECIFIER/">
+  ;; is not of type SEQUENCE
+  ;;
+  (if (typep 'foo (cons 1 2))
+      (make-load-form-saving-slots self)
+      ''i-cant-even))
+
+(with-test (:name :failed-dump-fun-source)
+  (with-scratch-file (fasl "fasl")
+    (let ((error-stream (make-string-output-stream)))
+      (multiple-value-bind (fasl warnings errors)
+          (let ((*error-output* error-stream))
+            (compile-file "bad-mlf-test.lisp" :output-file fasl))
+        (assert (and fasl warnings (not errors)))
+        (assert (search "bad thing to be" (get-output-stream-string error-stream)))
+        (load fasl)
+        (assert (eq (zook) 'hi))))))
+
+(with-test (:name :block-compile)
+  (with-scratch-file (fasl "fasl")
+    (compile-file "block-compile-test.lisp" :output-file fasl :block-compile t)
+    (load fasl)
+    ;; Make sure the defuns all get compiled into the same code
+    ;; component.
+    (assert (and (eq (sb-kernel::fun-code-header #'baz2)
+                     (sb-kernel::fun-code-header #'bar2))
+                 (eq (sb-kernel::fun-code-header #'baz2)
+                     (sb-kernel::fun-code-header #'foo2))))))
+
+(with-test (:name (:block-compile :entry-point))
+  (with-scratch-file (fasl "fasl")
+    (compile-file "block-compile-test-2.lisp" :output-file fasl :block-compile t :entry-points '(foo1))
+    (load fasl)
+    ;; Ensure bar1 gets let-converted into FOO1 and disappears.
+    (assert (not (fboundp 'bar1)))
+    (assert (eql (foo1 10 1) 3628800))
+    (let ((code (sb-kernel::fun-code-header #'foo1)))
+      (assert (= (sb-kernel::code-n-entries code) 1))
+      (assert (eq (aref (sb-kernel::code-entry-points code) 0)
+                  #'foo1)))))

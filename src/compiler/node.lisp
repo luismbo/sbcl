@@ -90,7 +90,8 @@
   (dynamic-extent nil :type (or null cleanup))
   ;; something or other that the back end annotates this lvar with
   (info nil)
-  (dependent-casts nil)
+  ;; Nodes to reoptimize together with the lvar
+  (dependent-nodes nil)
   (annotations nil)
   (dependent-annotations nil))
 
@@ -543,7 +544,6 @@
   (sset-number 0 :type fixnum)))
 (defprinter (component :identity t)
   name
-  #+sb-show id
   (reanalyze :test reanalyze))
 
 (declaim (inline reoptimize-component))
@@ -814,7 +814,6 @@
              :pretty-ir-printer
              (pretty-print-global-var structure stream))
   %source-name
-  #+sb-show id
   (type :test (not (eq type *universal-type*)))
   (defined-type :test (not (eq defined-type *universal-type*)))
   (where-from :test (not (eq where-from :assumed)))
@@ -851,7 +850,6 @@
 (defprinter (defined-fun :identity t
              :pretty-ir-printer (pretty-print-global-var structure stream))
   %source-name
-  #+sb-show id
   inlinep
   (functionals :test functionals))
 
@@ -993,7 +991,7 @@
   ;; INLINEP will always be NIL as well.)
   (inline-expansion nil :type list)
   ;; the lexical environment that the INLINE-EXPANSION should be converted in
-  (lexenv *lexenv* :type lexenv)
+  (lexenv *lexenv* :type lexenv :read-only t)
   ;; the original function or macro lambda list, or :UNSPECIFIED if
   ;; this is a compiler created function
   (arg-documentation nil :type (or list (member :unspecified)))
@@ -1024,8 +1022,7 @@
 (defprinter (functional :identity t
              :pretty-ir-printer (pretty-print-functional structure stream))
   %source-name
-  %debug-name
-  #+sb-show id)
+  %debug-name)
 
 (defun leaf-debug-name (leaf)
   (if (functional-p leaf)
@@ -1134,9 +1131,6 @@
   ;; we will still have caller's lexenv to figure out which cleanup is
   ;; in effect.
   (call-lexenv nil :type (or lexenv null))
-  ;; list of embedded lambdas
-  (children nil :type list)
-  (parent nil :type (or clambda null))
   (allow-instrumenting *allow-instrumenting* :type boolean)
   ;; True if this is a system introduced lambda: it may contain user code, but
   ;; the lambda itself is not, and the bindings introduced by it are considered
@@ -1146,7 +1140,6 @@
              :pretty-ir-printer (pretty-print-functional structure stream))
   %source-name
   %debug-name
-  #+sb-show id
   kind
   (type :test (not (eq type *universal-type*)))
   (where-from :test (not (eq where-from :assumed)))
@@ -1202,6 +1195,7 @@
   ;; true if &KEY was specified (which doesn't necessarily mean that
   ;; there are any &KEY arguments..)
   (keyp nil :type boolean)
+  (source-path)
   ;; the number of required arguments. This is the smallest legal
   ;; number of arguments.
   (min-args 0 :type unsigned-byte)
@@ -1228,7 +1222,6 @@
              :pretty-ir-printer (pretty-print-functional structure stream))
   %source-name
   %debug-name
-  #+sb-show id
   (type :test (not (eq type *universal-type*)))
   (where-from :test (not (eq where-from :assumed)))
   arglist
@@ -1339,7 +1332,6 @@
   source-form)
 (defprinter (lambda-var :identity t)
   %source-name
-  #+sb-show id
   (type :test (not (eq type *universal-type*)))
   (where-from :test (not (eq where-from :assumed)))
   (flags :test (not (zerop flags))
@@ -1378,7 +1370,6 @@
   ;; Constraints that cannot be expressed as NODE-DERIVED-TYPE
   constraints)
 (defprinter (ref :identity t)
-  #+sb-show id
   (%source-name :test (neq %source-name '.anonymous.))
   leaf)
 
@@ -1415,6 +1406,10 @@
 (defprinter (cset :conc-name set- :identity t)
   var
   (value :prin1 (lvar-uses value)))
+
+(defvar *inline-expansion-limit* 50
+  "an upper limit on the number of inline function calls that will be expanded
+   in any given code object (single function or block compilation)")
 
 (defvar *inline-expansions* nil)
 (declaim (list *inline-expansions*)
@@ -1462,7 +1457,6 @@
                          (:constructor make-combination (fun))
                          (:copier nil)))
 (defprinter (combination :identity t)
-  #+sb-show id
   (fun :prin1 (lvar-uses fun))
   (args :prin1 (mapcar (lambda (x)
                          (if x
@@ -1585,8 +1579,7 @@
   (exits nil :type list)
   ;; The cleanup for this entry. NULL only temporarily.
   (cleanup nil :type (or cleanup null)))
-(defprinter (entry :identity t)
-  #+sb-show id)
+(defprinter (entry :identity t))
 
 ;;; The EXIT node marks the place at which exit code would be emitted,
 ;;; if necessary. This is interposed between the uses of the exit
@@ -1607,7 +1600,6 @@
   (value nil :type (or lvar null))
   (nlx-info nil :type (or nlx-info null)))
 (defprinter (exit :identity t)
-  #+sb-show id
   (entry :test entry)
   (value :test value))
 

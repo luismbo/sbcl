@@ -19,7 +19,7 @@
                         (:constructor
                          make-instruction (name format-name print-name
                                            length mask id printer labeller
-                                           prefilters control))
+                                           prefilter control))
                         (:copier nil))
   (name nil :type symbol :read-only t)
   (format-name nil :type (or symbol string) :read-only t)
@@ -31,8 +31,8 @@
 
   (print-name nil :type symbol :read-only t)
 
-  ;; disassembly "functions"
-  (prefilters nil :type list :read-only t)
+  ;; disassembly methods
+  (prefilter nil :type function :read-only t)
   (labeller nil :type (or list vector) :read-only t)
   (printer nil :type (or null function) :read-only t)
   (control nil :type (or null function) :read-only t)
@@ -544,31 +544,10 @@
                                 (ecase dchunk-bits (32 4) (64 8))
                                 (dstate-byte-order ,state)))))
 
-;;; Apply field prefilters, parsing any additional suffix bytes as needed for
-;;; variable-length instructions.
-;;; Store results into DSTATE and update the next-offs accordingly.
-(defun apply-prefilters (dstate inst chunk)
-  (declare (optimize (sb-c::insert-array-bounds-checks 0)))
-  (dolist (item (inst-prefilters inst))
-    ;; item = #(INDEX FUNCTION SIGN-EXTEND-P BYTE-SPEC ...).
-    (flet ((extract-byte (spec-index)
-             (let* ((byte-spec (svref item spec-index))
-                    (integer (dchunk-extract chunk byte-spec)))
-               (if (svref item 2) ; SIGN-EXTEND-P
-                   (sign-extend integer (byte-size byte-spec))
-                   integer))))
-          (let ((item-length (length item))
-                (fun (the function (svref item 1))))
-            (setf (svref (dstate-filtered-values dstate) (svref item 0))
-                  (case item-length
-                   (2 (funcall fun dstate)) ; no subfields
-                   (3 (bug "Bogus prefilter"))
-                   (4 (funcall fun dstate (extract-byte 3))) ; one subfield
-                   (5 (funcall fun dstate ; two subfields
-                               (extract-byte 3) (extract-byte 4)))
-                   (t (apply fun dstate ; > 2 subfields
-                             (loop for i from 3 below item-length
-                                   collect (extract-byte i))))))))))
+(defun operand (thing dstate)
+  (let ((index (dstate-n-operands dstate)))
+    (setf (aref (dstate-operands dstate) index) thing
+          (dstate-n-operands dstate) (1+ index))))
 
 ;;; Decode the instruction at the current ofset in the segment of DSTATE.
 ;;; Call this only when all of the following hold:
@@ -590,7 +569,7 @@
      (aver inst)
      (let ((offs (+ (dstate-cur-offs dstate) (inst-length inst))))
        (setf (dstate-next-offs dstate) offs)
-       (apply-prefilters dstate inst chunk)
+       (funcall (inst-prefilter inst) dstate chunk)
        ;; Grab the revised NEXT-OFFS
        (setf (dstate-cur-offs dstate) (dstate-next-offs dstate))
        ;; Return the first instruction which has a printer.
@@ -605,8 +584,10 @@
            (funcall it chunk inst nil dstate)
            ;; FIXME: we're not returning the opaque bytes in any way
            (setf (dstate-cur-offs dstate) (dstate-next-offs dstate)))
-         (return (prog1 (cons (inst-name inst) (nreverse (dstate-operands dstate)))
-                   (setf (dstate-operands dstate) nil))))))))
+         (return (prog1 (cons (inst-name inst)
+                              (replace (make-list (dstate-n-operands dstate))
+                                       (dstate-operands dstate)))
+                   (setf (dstate-n-operands dstate) 0))))))))
 
 ;;; Iterate through the instructions in SEGMENT, calling FUNCTION for
 ;;; each instruction, with arguments of CHUNK, STREAM, and DSTATE.
@@ -697,7 +678,7 @@
                           (print-inst (inst-length inst) stream dstate
                                       :trailing-space nil))
                         (let ((orig-next (dstate-next-offs dstate)))
-                          (apply-prefilters dstate inst chunk)
+                          (funcall (inst-prefilter inst) dstate chunk)
                           (setf prefix-p (null (inst-printer inst)))
                           (when stream
                             ;; Print any instruction bytes recognized by
@@ -878,6 +859,371 @@
               (dchunk-insertf id (car fields) (car values))
               (dchunk-orf mask field-mask))))))))
 
+;;;; Utilities for converting a printer specification into lisp code.
+
+;;;; a simple function that helps avoid consing when we're just
+;;;; recursively filtering things that usually don't change
+(defun sharing-mapcar (fun list)
+  (declare (type function fun))
+  "A simple (one list arg) mapcar that avoids consing up a new list
+  as long as the results of calling FUN on the elements of LIST are
+  eq to the original."
+  (when list
+    (recons list
+            (funcall fun (car list))
+            (sharing-mapcar fun (cdr list)))))
+
+;;; Return the first non-keyword symbol in a depth-first search of TREE.
+(defun find-first-field-name (tree)
+  (cond ((null tree)
+         nil)
+        ((and (symbolp tree) (not (keywordp tree)))
+         tree)
+        ((atom tree)
+         nil)
+        ((eq (car tree) 'quote)
+         nil)
+        (t
+         (or (find-first-field-name (car tree))
+             (find-first-field-name (cdr tree))))))
+
+(defun compare-fields-form (val-form-1 val-form-2)
+  (flet ((listify-fields (fields)
+           (cond ((symbolp fields) fields)
+                 ((every #'constantp fields) `',fields)
+                 (t `(list ,@fields)))))
+    (cond ((or (symbolp val-form-1) (symbolp val-form-2))
+           `(equal ,(listify-fields val-form-1)
+                   ,(listify-fields val-form-2)))
+          (t
+           `(and ,@(mapcar (lambda (v1 v2) `(= ,v1 ,v2))
+                           val-form-1 val-form-2))))))
+
+(defun compile-test (subj test funstate)
+  (when (and (consp test) (symbolp (car test)) (not (keywordp (car test))))
+    (setf subj (car test)
+          test (cdr test)))
+  (let ((key (if (consp test) (car test) test))
+        (body (if (consp test) (cdr test) nil)))
+    (cond ((null key)
+           nil)
+          ((eq key t)
+           t)
+          ((eq key :constant)
+           (let* ((arg (arg-or-lose subj funstate))
+                  (fields (arg-fields arg))
+                  (consts body))
+             (when (not (= (length fields) (length consts)))
+               (pd-error "The number of constants doesn't match number of ~
+                          fields in: (~S :constant~{ ~S~})"
+                         subj body))
+             (compare-fields-form (gen-arg-forms arg :numeric funstate)
+                                  consts)))
+          ((eq key :positive)
+           `(> ,(arg-value-form (arg-or-lose subj funstate) funstate :numeric)
+               0))
+          ((eq key :negative)
+           `(< ,(arg-value-form (arg-or-lose subj funstate) funstate :numeric)
+               0))
+          ((eq key :test)
+           `(,@body ,(arg-value-form (arg-or-lose subj funstate) funstate :numeric)))
+          ((eq key :same-as)
+           (let ((arg1 (arg-or-lose subj funstate))
+                 (arg2 (arg-or-lose (car body) funstate)))
+             (unless (and (= (length (arg-fields arg1))
+                             (length (arg-fields arg2)))
+                          (every (lambda (bs1 bs2)
+                                   (= (byte-size bs1) (byte-size bs2)))
+                                 (arg-fields arg1)
+                                 (arg-fields arg2)))
+               (pd-error "can't compare differently sized fields: ~
+                          (~S :same-as ~S)" subj (car body)))
+             (compare-fields-form (gen-arg-forms arg1 :numeric funstate)
+                                  (gen-arg-forms arg2 :numeric funstate))))
+          ((eq key :or)
+           `(or ,@(mapcar (lambda (sub) (compile-test subj sub funstate))
+                          body)))
+          ((eq key :and)
+           `(and ,@(mapcar (lambda (sub) (compile-test subj sub funstate))
+                           body)))
+          ((eq key :not)
+           `(not ,(compile-test subj (car body) funstate)))
+          ((and (consp key) (null body))
+           (compile-test subj key funstate))
+          (t
+           (pd-error "bogus test-form: ~S" test)))))
+
+(defun compile-print (arg-name funstate &optional printer)
+  (let* ((arg (arg-or-lose arg-name funstate))
+         (printer (or printer (arg-printer arg))))
+    (etypecase printer
+      (string
+       `(local-format-arg ,(arg-value-form arg funstate) ,printer))
+      (vector
+       `(local-princ (aref ,printer ,(arg-value-form arg funstate :numeric))))
+      ((or function (cons (eql function)))
+       `(local-call-arg-printer ,(arg-value-form arg funstate) ,printer))
+      (boolean
+       `(,(if (arg-use-label arg) 'local-princ16 'local-princ)
+         ,(arg-value-form arg funstate))))))
+
+(defun compile-printer-body (source funstate)
+  (cond ((null source)
+         nil)
+        ((eq source :name)
+         `(local-print-name))
+        ((eq source :tab)
+         `(local-tab-to-arg-column))
+        ((keywordp source)
+         (pd-error "unknown printer element: ~S" source))
+        ((symbolp source)
+         (compile-print source funstate))
+        ((atom source)
+         ;; Skip the argument separator if disassembling into a model.
+         ;; The ", " string is quite consistent amongst backends.
+         ;; Making this any more general - such as never printing strings
+         ;; into a model - would be prone to information loss.
+         (if (and (stringp source) (string= source ", "))
+             `(local-print-arg-separator)
+             `(local-princ ',source)))
+        ((eq (car source) 'quote)
+         `(,(if (symbolp (cadr source)) 'local-princ-symbol 'local-princ) ,source))
+        ((eq (car source) :using)
+         (let ((f (cadr source)))
+          (unless (typep f '(or string (cons (eql function) (cons symbol null))))
+            (pd-error "The first arg to :USING must be a string or #'function."))
+          (compile-print (caddr source) funstate f)))
+        ((eq (car source) :plus-integer)
+         ;; prints the given field proceed with a + or a -
+         (let ((form
+                (arg-value-form (arg-or-lose (cadr source) funstate)
+                                funstate
+                                :numeric)))
+           `(progn
+              (when (>= ,form 0)
+                (local-write-char #\+))
+              (local-princ ,form))))
+        ((eq (car source) 'function)
+         `(local-call-global-printer ,source))
+        ((eq (car source) :cond)
+         `(cond ,@(mapcar (lambda (clause)
+                            `(,(compile-test (find-first-field-name
+                                              (cdr clause))
+                                             (car clause)
+                                             funstate)
+                              ,@(compile-printer-list (cdr clause)
+                                                      funstate)))
+                          (cdr source))))
+        ;; :IF, :UNLESS, and :WHEN are replaced by :COND during preprocessing
+        (t
+         `(progn ,@(compile-printer-list source funstate)))))
+
+(defun compile-printer-list (sources funstate)
+  (when sources
+    (cons (compile-printer-body (car sources) funstate)
+          (compile-printer-list (cdr sources) funstate))))
+
+(defun all-arg-refs-relevant-p (printer args)
+  (cond ((or (null printer) (keywordp printer) (eq printer t))
+         t)
+        ((symbolp printer)
+         (find printer args :key #'arg-name))
+        ((listp printer)
+         (every (lambda (x) (all-arg-refs-relevant-p x args))
+                printer))
+        (t t)))
+
+(defun pick-printer-choice (choices args)
+  (dolist (choice choices
+           (pd-error "no suitable choice found in ~S" choices))
+    (when (all-arg-refs-relevant-p choice args)
+      (return choice))))
+
+(defun preprocess-chooses (printer args)
+  (cond ((atom printer)
+         printer)
+        ((eq (car printer) :choose)
+         (pick-printer-choice (cdr printer) args))
+        (t
+         (sharing-mapcar (lambda (sub) (preprocess-chooses sub args))
+                         printer))))
+
+(defun preprocess-test (subj form args)
+  (multiple-value-bind (subj test)
+      (if (and (consp form) (symbolp (car form)) (not (keywordp (car form))))
+          (values (car form) (cdr form))
+          (values subj form))
+    (let ((key (if (consp test) (car test) test))
+          (body (if (consp test) (cdr test) nil)))
+      (case key
+        (:constant
+         (if (null body)
+             ;; If no supplied constant values, just any constant is ok,
+             ;; just see whether there's some constant value in the arg.
+             (not
+              (null
+               (arg-value
+                (or (find subj args :key #'arg-name)
+                    (pd-error "unknown argument ~S" subj)))))
+             ;; Otherwise, defer to run-time.
+             form))
+        ((:or :and :not)
+         (recons
+          form
+          subj
+          (recons
+           test
+           key
+           (sharing-mapcar
+            (lambda (sub-test)
+              (preprocess-test subj sub-test args))
+            body))))
+        (t form)))))
+
+(defun preprocess-conditionals (printer args)
+  (if (atom printer)
+      printer
+      (case (car printer)
+        (:unless
+         (preprocess-conditionals
+          `(:cond ((:not ,(nth 1 printer)) ,@(nthcdr 2 printer)))
+          args))
+        (:when
+         (preprocess-conditionals `(:cond (,(cdr printer))) args))
+        (:if
+         (preprocess-conditionals
+          `(:cond (,(nth 1 printer) ,(nth 2 printer))
+                  (t ,(nth 3 printer)))
+          args))
+        (:cond
+         (recons
+          printer
+          :cond
+          (sharing-mapcar
+           (lambda (clause)
+             (let ((filtered-body
+                    (sharing-mapcar
+                     (lambda (sub-printer)
+                       (preprocess-conditionals sub-printer args))
+                     (cdr clause))))
+               (recons
+                clause
+                (preprocess-test (find-first-field-name filtered-body)
+                                 (car clause)
+                                 args)
+                filtered-body)))
+           (cdr printer))))
+        (quote printer)
+        (t
+         (sharing-mapcar
+          (lambda (sub-printer)
+            (preprocess-conditionals sub-printer args))
+          printer)))))
+
+;;; Return a version of the disassembly-template PRINTER with
+;;; compile-time tests (e.g. :constant without a value), and any
+;;; :CHOOSE operators resolved properly for the args ARGS.
+;;;
+;;; (:CHOOSE Sub*) simply returns the first Sub in which every field
+;;; reference refers to a valid arg.
+(defun preprocess-printer (printer args)
+  (preprocess-conditionals (preprocess-chooses printer args) args))
+
+;;; "Compile" a printer which means first turning the abstract syntax
+;;; into a lambda expression that performs various output operations,
+;;; and then compiling the lambda.
+(defun find-printer-fun (printer-source args cache *current-instruction-flavor*)
+  (let* ((source (preprocess-printer printer-source args))
+         (funstate (make-funstate args))
+         (forms (let ((*!temp-var-counter* 0))
+                  (compile-printer-list source funstate)))
+         (bindings (make-arg-temp-bindings funstate))
+         (guts `(let* ,bindings ,@forms))
+         (sub-table (assq :printer cache)))
+    (or (cdr (assoc guts (cdr sub-table) :test #'equal))
+        (let ((template
+     `(named-lambda (inst-printer ,@*current-instruction-flavor*)
+        (chunk inst stream dstate
+               &aux (chunk (truly-the dchunk chunk))
+                    (inst (truly-the instruction inst))
+                    (stream (truly-the (or null stream) stream))
+                    (dstate (truly-the disassem-state dstate)))
+       (macrolet ((local-format-arg (arg fmt)
+                    `(funcall (formatter ,fmt) stream ,arg))
+                  (local-call-arg-printer (arg fun)
+                    ;; If FUN is literally #<FUNCTION THING>, try to turn it back to
+                    ;; its name so that we can indirect through an FDEFN, thus allowing
+                    ;; redefinition of THING when debugging the disassembler.
+                    ;; I looked at how this worked in CMUCL, and it also used to wire
+                    ;; in the function object. That was a bug, not a feature, imho.
+                    ;; The proper solution is probably to expand the defining macros
+                    ;; differently. But some esoteric use might rely on lexical capture.
+                    ;; I hope not, though this technique doesn't affect such a use.
+                    ;; Another possible solution is to turn ARG-TYPEs into first-class
+                    ;; objects, storing function in that object, and always calling
+                    ;; the function in it (and allowing redefinition of ARG-TYPEs).
+                    ;; That's tricky because the relation between an arg an its type
+                    ;; is lost after parsing,
+                    ;; because the type is purely a logical construct.
+                    (if (and (simple-fun-p fun)
+                             (symbolp (%simple-fun-name fun))
+                             (eq (symbol-package (%simple-fun-name fun))
+                                 sb-assem::*backend-instruction-set-package*))
+                        `(,(%simple-fun-name fun) ,arg stream dstate)
+                        `(funcall ,fun ,arg stream dstate))))
+         ;; All the LOCAL-foo functions print nothing if stream is nil
+         (flet ((local-tab-to-arg-column ()
+                  (tab (dstate-argument-column dstate) stream))
+                (local-print-name ()
+                  (when stream (princ (inst-print-name inst) stream)))
+                (local-print-arg-separator ()
+                  (when stream (princ ", " stream)))
+                (local-write-char (ch)
+                  (when stream (write-char ch stream)))
+                (local-princ-symbol (thing)
+                  ;; This special case is reqired so that decoding x86 JMP and CMOV
+                  ;; to an instruction model does not insert a superfluous symbol.
+                  ;; I hope this is right. We really only want to elide symbols
+                  ;; that are not inside a :COND or other selector.
+                  (when stream (princ thing stream)))
+                (local-princ (thing)
+                  (if stream
+                      (princ thing stream)
+                      (operand thing dstate)))
+                (local-princ16 (thing)
+                  (if stream
+                      (princ16 thing stream)
+                      (operand thing dstate)))
+                (local-call-global-printer (fun)
+                  (funcall fun chunk inst stream dstate))
+                (local-filtered-value (offset)
+                  (declare (type filtered-value-index offset))
+                  (aref (dstate-filtered-values dstate) offset))
+                (local-extract (bytespec)
+                  (dchunk-extract chunk bytespec))
+                (lookup-label (lab)
+                  (or (gethash lab (dstate-label-hash dstate))
+                      lab))
+                (adjust-label (val adjust-fun)
+                  (funcall adjust-fun val dstate)))
+           (declare (ignorable #'local-tab-to-arg-column
+                               #'local-print-name #'local-print-arg-separator
+                               #'local-princ #'local-princ16 #'local-princ-symbol
+                               #'local-write-char
+                               #'local-call-global-printer
+                               #'local-extract
+                               #'local-filtered-value
+                               #'lookup-label #'adjust-label)
+                    (inline local-tab-to-arg-column
+                            local-print-arg-separator
+                            local-princ local-princ16 local-princ-symbol
+                            local-call-global-printer
+                            local-filtered-value local-extract
+                            lookup-label adjust-label))
+           :body)))))
+          (cdar (push (cons guts (compile nil (subst guts :body template)))
+                      (cdr sub-table)))))))
+
 (defun collect-inst-variants (base-name package variants cache)
   (loop for printer in variants
         for index from 1
@@ -910,7 +1256,7 @@
                               printer)
                      (find-printer-fun it args cache (list base-name index)))
                    (collect-labelish-operands args cache)
-                   (collect-prefiltering-args args cache)
+                   (compute-prefilter args cache)
                    control))))))
 
 (defun !compile-inst-printers ()
@@ -918,7 +1264,7 @@
         (cache (list (list :printer) (list :prefilter) (list :labeller))))
     (do-symbols (symbol package)
       (awhen (get symbol 'instruction-flavors)
-        (setf (get symbol 'instruction-flavors)
+        (setf (get symbol 'instructions)
               (collect-inst-variants symbol package it cache))))
     (unless (sb-impl::!c-runtime-noinform-p)
       (format t "~&Disassembler: ~{~D printers, ~D prefilters, ~D labelers~}~%"
@@ -931,8 +1277,7 @@
     (when (or force (null ispace))
       (let ((insts nil))
         (do-symbols (symbol package)
-          (setq insts (nconc (copy-list (get symbol 'instruction-flavors))
-                             insts)))
+          (setq insts (nconc (copy-list (get symbol 'instructions)) insts)))
         (setf ispace (build-inst-space insts)))
       (setf *disassem-inst-space* ispace))
     ispace))
@@ -2071,6 +2416,40 @@
           (t
            (values nil nil)))))
 
+(defun find-code-constant-from-interior-pointer (value dstate)
+  (let* ((seg (dstate-segment dstate))
+         (code (seg-code seg)))
+    (when code
+      (let ((callables (seg-code-callables seg)))
+        (when (eq callables :?)
+          (setq callables nil)
+          (loop for i from sb-vm:code-constants-offset below (code-header-words code)
+                do (let* ((const (code-header-ref code i))
+                          (fun (typecase const
+                                 (fdefn (fdefn-fun const))
+                                 (function const))))
+                     ;; This collection will only make sense for immobile objects,
+                     ;; but it's fine to collect it.
+                     (when (fdefn-p const)
+                       (push const callables))
+                     (when (functionp fun)
+                       (push fun callables))))
+          ;; Sorting downward finds the right entry point if there are multiple callees
+          ;; in a code object using the trivial algorithm below.
+          (setf callables (sort callables #'> :key
+                                ;; KLUDGE: need a stub, #'GET-LISP-OBJ-ADDRESS won't work
+                                (lambda (x) (get-lisp-obj-address x)))
+                (seg-code-callables seg) callables))
+        (dolist (thing callables)
+          (when (<= (logandc2 (get-lisp-obj-address thing) sb-vm:lowtag-mask)
+                    value
+                    (let ((base-obj
+                            (if (simple-fun-p thing) (fun-code-header thing) thing)))
+                      (+ (logandc2 (get-lisp-obj-address base-obj) sb-vm:lowtag-mask)
+                         (sb-vm::primitive-object-size base-obj)
+                         -1)))
+            (return thing)))))))
+
 ;;; If the memory address located NIL-BYTE-OFFSET bytes from the
 ;;; constant NIL is a valid slot in a symbol, store a note describing
 ;;; which symbol and slot, to be printed as an end-of-line comment
@@ -2210,7 +2589,8 @@
     (note (lambda (s) (prin1 symbol s)) dstate)))
 
 (defun get-internal-error-name (errnum)
-  (cadr (svref sb-c:+backend-internal-errors+ errnum)))
+  (and (array-in-bounds-p sb-c:+backend-internal-errors+ errnum)
+       (cadr (svref sb-c:+backend-internal-errors+ errnum))))
 
 (defun get-random-tn-name (sc+offset)
   (let ((sc (sb-c:sc+offset-scn sc+offset))
@@ -2261,10 +2641,10 @@
                   (incf (dstate-cur-offs dstate) num)))
               (emit-note (note)
                 (when note
-                  (note note dstate))))
+                  (note (string note) dstate))))
          (when error-byte
            (emit-err-arg))
-         (emit-note (symbol-name (get-internal-error-name errnum)))
+         (emit-note (get-internal-error-name errnum))
          (dolist (sc+offset sc+offsets)
            (emit-err-arg)
            (if (= (sb-c:sc+offset-scn sc+offset) sb-vm:constant-sc-number)
@@ -2307,23 +2687,59 @@
                      (lengths)
                      error-byte))))))
 
-;; A prefilter set is a list of vectors specifying bytes to extract
-;; and a function to call on the extracted value(s).
-;; EQUALP lists of vectors can be coalesced, since they're immutable.
-(defun collect-prefiltering-args (args cache)
-  (awhen (remove-if-not #'arg-prefilter args)
-    (let ((repr
-           (mapcar (lambda (arg &aux (bytes (arg-fields arg)))
-                     (coerce (list* (posq arg args)
-                                    (arg-prefilter arg)
-                                    (and bytes (cons (arg-sign-extend-p arg) bytes)))
-                             'vector))
-                   it))
-          (table (assq :prefilter cache)))
-      (or (find repr (cdr table) :test 'equalp)
-          (car (push repr (cdr table)))))))
+;;; Compute a lambda which receives a DSTATE and DCHUNK, and for each arg
+;;; in ARGS that gets some calculation performed, performs all such
+;;; calculations.
+;;; Arguments with no field specification can be used to parse suffix bytes.
+;;; The lambda stores all results into DSTATE and possibly updates NEXT-OFFS.
+(defun compute-prefilter (args cache)
+  (let ((repr
+         ;; Start with an abstract representation of all the
+         ;; filtering actions performed in ARGS.
+         (mapcan (lambda (arg)
+                   (awhen (arg-prefilter arg)
+                     (list (list* it
+                                  (posq arg args)
+                                  (arg-sign-extend-p arg)
+                                  (arg-fields arg)))))
+                 args)))
+    (when (null repr)
+      (return-from compute-prefilter
+        (lambda (x y)
+          ;; do nothing at all, as efficiently as possible
+          (declare (optimize (safety 0)) (ignore x y)))))
+    ;; Try to find a lambda that matches the abstract representation
+    (awhen (assoc repr (cdr (assq :prefilter cache)) :test 'equal)
+      (return-from compute-prefilter (cdr it)))
+    (let* ((actions
+            (mapcan
+             (lambda (filter-spec)
+               (destructuring-bind (function arg-index sign-extend . fields) filter-spec
+                 `((svref (dstate-filtered-values dstate) ,arg-index)
+                   (funcall
+                    ,function
+                    dstate
+                    ,@(mapcar (lambda (byte)
+                                (let ((int `(dchunk-extract chunk ',byte)))
+                                  (if sign-extend
+                                      `(sign-extend ,int ,(byte-size byte))
+                                      int)))
+                              fields)))))
+             repr))
+           (compiled
+            (compile nil `(lambda (dstate chunk)
+                            (let ((chunk (truly-the dchunk chunk))
+                                  (dstate (truly-the disassem-state dstate)))
+                              (declare (ignorable chunk))
+                              (setf ,@actions))))))
+      (push (cons repr compiled) (cdr (assq :prefilter cache)))
+      compiled)))
 
 (defun !remove-bootstrap-symbols ()
+  ;; Remove INSTRUCTION-FLAVORS properties, which are the inputs to
+  ;; computing the INSTRUCTION instances.
+  (do-symbols (symbol sb-assem::*backend-instruction-set-package*)
+    (remf (symbol-plist symbol) 'instruction-flavors))
   ;; Remove compile-time-only metadata. This preserves compatibility with the
   ;; older disassembler macros which wrapped GEN-ARG-TYPE-DEF-FORM and such
   ;; in (EVAL-WHEN (:COMPILE-TOPLEVEL :EXECUTE)), which in turn required that

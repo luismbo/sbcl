@@ -97,17 +97,18 @@
         (t (return-from cmovp)))
   (let ((succ-a (block-succ a))
         (succ-b (block-succ b)))
-    (unless (and (singleton-p succ-a)
-                 (singleton-p succ-b)
-                 (eq (car succ-a) (car succ-b)))
-      (return-from cmovp))
-    (multiple-value-bind (value-a target)
-        (move-value-target (block-info a))
-      (multiple-value-bind (value-b targetp)
-          (move-value-target (block-info b))
-        (and value-a value-b (eq target targetp)
-             (values (block-label (car succ-a))
-                     target value-a value-b))))))
+    (when (and (singleton-p succ-a)
+               (singleton-p succ-b)
+               (eq (car succ-a) (car succ-b))
+               (singleton-p (block-pred a))
+               (singleton-p (block-pred b)))
+      (multiple-value-bind (value-a target)
+          (move-value-target (block-info a))
+        (multiple-value-bind (value-b targetp)
+            (move-value-target (block-info b))
+          (and value-a value-b (eq target targetp)
+               (values (block-label (car succ-a))
+                       target value-a value-b)))))))
 
 ;; To convert a branch to a conditional move:
 ;; 1. Convert both possible values to the chosen common representation
@@ -519,7 +520,7 @@
         (next-start-vop (ir2-block-next (vop-block branch)))
         (next-start-vop (gethash label *2block-info*)))))
 
-#+(or) ;; sometimes causes the TN to be spilled, disable until it's figured out why
+;;; Optimize (if x ... nil) to reuse the NIL coming from X.
 (defoptimizer (vop-optimize if-eq) (if-eq)
   (when (boundp '*2block-info*)
     (let ((branch-if (vop-next if-eq)))

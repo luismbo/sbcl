@@ -15,18 +15,28 @@
 ;;; control string in a loop, not to avoid re-tokenizing all strings that
 ;;; happen to be STRING= to that string.
 ;;; (Might we want to bypass the cache when compile-time tokenizing?)
-(defun-cached (tokenize-control-string
-               :hash-bits 7
-               :hash-function #+sb-xc-host
-                              (lambda (x) (declare (ignore x)) 1)
-                              #-sb-xc-host #'pointer-hash)
-    ;; Due to string mutability, the comparator is STRING=
-    ;; even though the hash is address-based.
-    ((string string=))
-  (declare (simple-string string))
+#+sb-xc-host
+(defun tokenize-control-string (string)
   (combine-directives
    (%tokenize-control-string string 0 (length string) nil)
    t))
+#-sb-xc-host
+(defun-cached (tokenize-control-string
+               :memoizer memoize
+               :hash-bits 7
+               :hash-function #'pointer-hash)
+              ((string eq))
+  (declare (simple-string string))
+  (macrolet ((compute-it ()
+               `(combine-directives
+                 (%tokenize-control-string string 0 (length string) nil)
+                 t)))
+    (if (logtest (get-header-data string)
+                 ;; shareable = readonly
+                 (logior sb-vm:+vector-shareable+
+                         sb-vm:+vector-shareable-nonstd+))
+        (memoize (compute-it))
+        (compute-it))))
 
 ;;; If at some point I can figure out how to *CORRECTLY* utilize
 ;;; non-simple strings, then the INDEX and END will bound the parse.
@@ -1382,11 +1392,12 @@
     (values (nreverse symbols)
             (possibly-base-stringize new-string))))
 
+(push '("SB-FORMAT" tokens) *!removable-symbols*)
 (sb-xc:defmacro tokens (string)
   (declare (string string))
   (multiple-value-bind (symbols new-string) (extract-user-fun-directives string)
     (if symbols
-        `(load-time-value (make-fmt-control ,new-string ',symbols) t)
+        (make-fmt-control-proxy new-string symbols)
         (possibly-base-stringize new-string))))
 
 ;;; compile-time checking for argument mismatch.  This code is

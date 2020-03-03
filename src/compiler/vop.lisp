@@ -336,9 +336,15 @@
   ;;    a function. <function> is the XEP lambda for the called
   ;;    function; its LEAF-INFO should be an ENTRY-INFO structure.
   ;;
-  ;; (:label <label>)
-  ;;    Is replaced with the byte offset of that label from the start
-  ;;    of the code vector (including the header length.)
+  ;; (:fdefinition <name>)
+  ;;    Is replaced with the fdefn for NAME.
+  ;;
+  ;; (:known-fun <name>)
+  ;;    Is replaced with #'NAME for a system-internal function.
+  ;;
+  ;; (:load-time-value <handle>)
+  ;;    Is replaced with the result of executing the forms
+  ;;    to compute <handle>.
   ;;
   ;; A null entry in this vector is a placeholder for implementation
   ;; overhead that is eventually stuffed in somehow.
@@ -363,7 +369,9 @@
   ;; setup-dynamic-count-info. (But only if we are generating code to
   ;; collect dynamic statistics.)
   #+sb-dyncount
-  (dyncount-info nil :type (or null dyncount-info)))
+  (dyncount-info nil :type (or null dyncount-info))
+  #+avx2
+  (avx2-used-p nil))
 
 ;;; An ENTRY-INFO condenses all the information that the dumper needs
 ;;; to create each XEP's function entry data structure. ENTRY-INFO

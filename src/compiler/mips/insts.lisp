@@ -74,18 +74,25 @@
 
 (define-arg-type reg
   :printer #'(lambda (value stream dstate)
-               (declare (stream stream) (fixnum value))
+               (declare (fixnum value))
                (let ((regname (aref *reg-symbols* value)))
-                 (princ regname stream)
-                 (maybe-note-associated-storage-ref
-                  value 'registers regname dstate))))
+                 (cond (stream
+                        (princ regname stream)
+                        (maybe-note-associated-storage-ref
+                         value 'registers regname dstate))
+                       (t
+                        (operand regname dstate))))))
 
 (define-arg-type load-store-annotation
   :printer (lambda (value stream dstate)
-             (declare (ignore stream))
-             (destructuring-bind (reg offset) value
-               (when (= reg sb-vm::code-offset)
-                 (note-code-constant offset dstate)))))
+             ;; We don't need to print anything if not disassembling
+             ;; to text, because rs + immediate were already shown.
+             ;; The load-store-annotation is overlayed on those fields
+             ;; (which I didn't think was allowed at all)
+             (when stream
+               (destructuring-bind (reg offset) value
+                 (when (= reg sb-vm::code-offset)
+                   (note-code-constant offset dstate))))))
 
 (defparameter *float-reg-symbols*
   (coerce
@@ -94,11 +101,14 @@
 
 (define-arg-type fp-reg
   :printer #'(lambda (value stream dstate)
-               (declare (stream stream) (fixnum value))
+               (declare (fixnum value))
                (let ((regname (aref *float-reg-symbols* value)))
-                 (princ regname stream)
-                 (maybe-note-associated-storage-ref
-                  value 'float-registers regname dstate))))
+                 (cond (stream
+                        (princ regname stream)
+                        (maybe-note-associated-storage-ref
+                         value 'float-registers regname dstate))
+                       (t
+                        (operand regname dstate))))))
 
 (define-arg-type control-reg :printer "(CR:#x~X)")
 
@@ -120,15 +130,15 @@
 
 (define-arg-type float-format
   :printer #'(lambda (value stream dstate)
-               (declare (ignore dstate)
-                        (stream stream)
-                        (fixnum value))
-               (princ (case value
-                        (0 's)
-                        (1 'd)
-                        (4 'w)
-                        (t '?))
-                      stream)))
+               (declare (fixnum value))
+               (let ((char (case value
+                             (0 's)
+                             (1 'd)
+                             (4 'w)
+                             (t '?))))
+                 (if stream
+                     (princ char stream)
+                     (operand char dstate)))))
 
 (defconstant-eqx compare-kinds
   '(:f :un :eq :ueq :olt :ult :ole :ule :sf :ngle :seq :ngl :lt :nge :le :ngt)
@@ -217,8 +227,11 @@
   (defparameter jump-printer
     #'(lambda (value stream dstate)
         (let ((addr (ash value 2)))
-          (maybe-note-assembler-routine addr t dstate)
-          (write addr :base 16 :radix t :stream stream)))))
+          (cond (stream
+                 (maybe-note-assembler-routine addr t dstate)
+                 (write addr :base 16 :radix t :stream stream))
+                (t
+                 (operand addr dstate)))))))
 
 (define-instruction-format (jump 32 :default-printer '(:name :tab target))
   (op :field (byte 6 26))
@@ -352,6 +365,12 @@
   (:emitter
    (emit-math-inst segment dst src1 src2 #b100000 #b001000)))
 
+;;; Note: ADDU doesn't really mean "unsigned" when used with an immediate operand.
+;;; From the processor manual: "ALL arithmetic immediate values are sign-extended.
+;;; After that, they are handled as signed or unsigned 32 bit numbers,
+;;; depending upon the instruction. The only difference between signed and unsigned
+;;; instructions is that signed instructions can generate an overflow exception
+;;; and unsigned instructions can not."
 (define-instruction addu (segment dst src1 &optional src2)
   (:declare (type tn dst)
             (type (or tn (signed-byte 16) fixup null) src1 src2))
@@ -788,7 +807,7 @@
   #'equalp)
 
 (define-instruction j (segment target)
-  (:declare (type (or tn fixup) target))
+  (:declare (type tn target))
   (:printer register ((op special-op) (rt 0) (rd 0) (funct #b001000))
             j-printer)
   (:printer jump ((op #b000010)) j-printer)
@@ -796,19 +815,11 @@
   (:dependencies (reads target))
   (:delay 1)
   (:emitter
-   (etypecase target
-     (tn
       (emit-register-inst segment special-op (reg-tn-encoding target)
-                          0 0 0 #b001000))
-     (fixup
-      (note-fixup segment :lui target)
-      (emit-immediate-inst segment #b001111 0 28 0)
-      (note-fixup segment :addi target)
-      (emit-immediate-inst segment #b001001 28 28 0)
-      (emit-register-inst segment special-op 28 0 0 0 #b001000)))))
+                          0 0 0 #b001000)))
 
 (define-instruction jal (segment reg-or-target &optional target)
-  (:declare (type (or null tn fixup) target)
+  (:declare (type (or null tn) target)
             (type (or tn fixup) reg-or-target))
   (:printer register ((op special-op) (rt 0) (funct #b001001)) j-printer)
   (:printer jump ((op #b000011)) j-printer)
@@ -825,17 +836,8 @@
    (unless target
      (setf target reg-or-target
            reg-or-target lip-tn))
-   (etypecase target
-     (tn
-      (emit-register-inst segment special-op (reg-tn-encoding target) 0
-                          (reg-tn-encoding reg-or-target) 0 #b001001))
-     (fixup
-      (note-fixup segment :lui target)
-      (emit-immediate-inst segment #b001111 0 28 0)
-      (note-fixup segment :addi target)
-      (emit-immediate-inst segment #b001001 28 28 0)
-      (emit-register-inst segment special-op 28 0
-                          (reg-tn-encoding reg-or-target) 0 #b001001)))))
+   (emit-register-inst segment special-op (reg-tn-encoding target) 0
+                       (reg-tn-encoding reg-or-target) 0 #b001001)))
 
 (define-instruction bc1f (segment target)
   (:declare (type label target))
@@ -947,7 +949,8 @@
      (inst addu reg zero-tn value))
     ((or (signed-byte 32) (unsigned-byte 32))
      (inst lui reg (ldb (byte 16 16) value))
-     (inst or reg (ldb (byte 16 0) value)))
+     (when (logtest value #xFFFF)
+       (inst or reg (ldb (byte 16 0) value))))
     (fixup
      (inst lui reg value)
      (inst addu reg value))))

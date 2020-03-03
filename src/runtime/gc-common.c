@@ -133,7 +133,7 @@ static inline void scav1(lispobj* object_ptr, lispobj object)
         if (page_table[page].gen == from_space && !pinned_p(object, page))
             FIX_POINTER();
     } else if (immobile_space_p(object)) {
-        lispobj *ptr = native_pointer(object);
+        lispobj *ptr = base_pointer(object);
         if (immobile_obj_gen_bits(ptr) == from_space)
             enliven_immobile_obj(ptr, 1);
     }
@@ -647,7 +647,7 @@ scav_instance(lispobj *where, lispobj header)
     if (instance_layout(where)) {
         lispobj *layout = native_pointer(instance_layout(where));
 #ifdef LISP_FEATURE_COMPACT_INSTANCE_HEADER
-        if (__immobile_obj_gen_bits(layout) == from_space)
+        if (immobile_obj_gen_bits(layout) == from_space)
             enliven_immobile_obj(layout, 1);
 #else
         if (forwarding_pointer_p(layout))
@@ -913,7 +913,7 @@ trans_weak_pointer(lispobj object)
         cell = forwarding_pointer_p(native) ? \
                LOW_WORD(forwarding_pointer_value(native)) : broken; \
     else if (immobile_space_p(pointee)) { \
-        if (immobile_obj_gen_bits(native) == from_space) cell = broken; \
+        if (immobile_obj_gen_bits(base_pointer(pointee)) == from_space) cell = broken; \
     }
 
 void smash_weak_pointers(void)
@@ -1007,7 +1007,7 @@ static inline int pointer_survived_gc_yet(lispobj obj)
                pinned_p(obj, page_index);
 #ifdef LISP_FEATURE_IMMOBILE_SPACE
     if (immobile_space_p(obj))
-        return immobile_obj_gen_bits(native_pointer(obj)) != from_space;
+        return immobile_obj_gen_bits(base_pointer(obj)) != from_space;
 #endif
     return 1;
 #endif
@@ -1487,7 +1487,7 @@ void cull_weak_hash_tables(int (*alivep[5])(lispobj,lispobj))
         NON_FAULTING_STORE(table->next_weak_hash_table = NIL,
                            &table->next_weak_hash_table);
         cull_weak_hash_table(table, alivep[hashtable_weakness(table)],
-                             pair_follow_fps);
+                             compacting_p() ? pair_follow_fps : 0);
     }
     weak_hash_tables = NULL;
     /* Reset weak_objects only if the count is nonzero.
@@ -2069,13 +2069,14 @@ pair_interior_pointer(os_context_t *context, uword_t pointer,
     }
 #if 0
     if (*register_pair >= 0)
-        fprintf(stderr, "p_i_p: %-3s=%#lx based on %s=%lx + %lx\n",
-                regname, pointer,
+        fprintf(stderr, "pair_interior_ptr: %-3s=%p based on %s=%p + %x\n",
+                regname, (void*)pointer,
                 lisp_register_names[*register_pair],
-                *os_context_register_addr(context, *register_pair),
-                *saved_offset);
+                (void*)(((uword_t)*os_context_register_addr(context, *register_pair))
+                        & ~LOWTAG_MASK),
+                (int)*saved_offset);
     else
-        fprintf(stderr, "p_i_p: %-3s=%#lx not based\n", regname, pointer);
+        fprintf(stderr, "pair_interior_ptr: %-3s=%#lx not based\n", regname, pointer);
 #endif
 }
 

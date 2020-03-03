@@ -160,7 +160,7 @@
                         (maybe-note-assembler-routine value nil dstate))
                     (print-label value stream dstate))
                    (t
-                    (push value (dstate-operands dstate))))))
+                    (operand value dstate)))))
 
 (define-arg-type accum
   :printer (lambda (value stream dstate)
@@ -199,14 +199,20 @@
   :printer (lambda (value stream dstate)
              (declare (notinline sb-disassem::inst-name))
              (if (not stream) ; won't have a DSTATE-INST in this case, maybe fix that?
-                 (push value (dstate-operands dstate))
+                 (operand value dstate)
                  (let ((opcode (sb-disassem::inst-name (sb-disassem::dstate-inst dstate)))
                        (size (inst-operand-size dstate)))
-                   (if (and (or (and (eq opcode 'cmp) (eq size :qword))
-                                ;; Slight bug still- MOV to memory of :DWORD could be writing
-                                ;; a raw slot or anything. Only a :QWORD could be a symbol, however
-                                ;; the size when moving to register is :DWORD.
-                                (and (eq opcode 'mov) (memq size '(:dword :qword))))
+                   ;; Slight bugs still- MOV to memory of :DWORD could be writing
+                   ;; a raw slot or anything. Only a :QWORD could be a symbol, however
+                   ;; the size when moving to register is :DWORD.
+                   ;; And CMP could be comparing "raw" data from SAP-REF-32, except that
+                   ;; in practice it can't because the compiler is too stupid to do it,
+                   ;; and will fixnumize the loaded value.
+                   ;; If this is too eager in printing random constants as lisp objects,
+                   ;; there is another tactic we could use: only consider something a pointer
+                   ;; if it is in a location corresponding to an absolute code fixup.
+                   (if (and (memq size '(:dword :qword))
+                            (memq opcode '(mov cmp))
                             (maybe-note-static-symbol value dstate))
                        (princ16 value stream)
                        (princ value stream))))))
@@ -314,7 +320,7 @@
                                       (type (or null stream) stream))
                              (if stream
                                  (format stream ,format-string value)
-                                 (push value (dstate-operands dstate)))))))
+                                 (operand value dstate))))))
   (define-sse-shuffle-arg-type sse-shuffle-pattern-2-2 "#b~2,'0B")
   (define-sse-shuffle-arg-type sse-shuffle-pattern-8-4 "#4r~4,4,'0R"))
 
@@ -3406,10 +3412,7 @@
       #+(and sb-simd-pack-256 (not sb-xc-host))
       (simd-pack-256
        (setq constant
-             (list :avx2 (logior (%simd-pack-256-0 first)
-                                 (ash (%simd-pack-256-1 first) 64)
-                                 (ash (%simd-pack-256-2 first) 128)
-                                 (ash (%simd-pack-256-3 first) 192)))))))
+             (sb-vm::%simd-pack-256-inline-constant first)))))
   (destructuring-bind (type value) constant
     (ecase type
       ((:byte :word :dword :qword)

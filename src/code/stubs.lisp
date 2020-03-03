@@ -159,3 +159,15 @@
   (declare (explicit-check)) ; actually, not
   (declare (ignore satisfies))
   (symbol-hash* x nil))
+
+;;; TYPECASE could expand to contain a call to this function.
+;;; The interpreter can ignore it, it is just compiler magic.
+(defun sb-c::%type-constraint (var type)
+  (declare (ignore var type))
+  nil)
+(eval-when (:compile-toplevel)
+  ;; Defining %TYPE-CONSTRAINT issues a full warning because TYPE's type
+  ;; is (OR TYPE-SPECIFIER CTYPE), and TYPE-SPECIFIER is
+  ;; (OR LIST SYMBOL CLASSOID CLASS), and CLASS isn't known, and you can't
+  ;; define it because it's a standard symbol.
+  (setq sb-c::*undefined-warnings* nil))

@@ -422,6 +422,15 @@
     (link-node-to-previous-ctran old temp))
   (values))
 
+(defun insert-node-before-no-split (old new)
+  (let ((prev (node-prev old))
+        (temp (make-ctran)))
+    (setf (ctran-next prev) nil)
+    (link-node-to-previous-ctran new prev)
+    (use-ctran new temp)
+    (link-node-to-previous-ctran old temp))
+  (values))
+
 ;;; This function is used to set the ctran for a node, and thus
 ;;; determine what receives the value.
 (defun use-lvar (node lvar)
@@ -597,26 +606,17 @@
     (values)))
 
 ;;; Add FUNCTIONAL to the COMPONENT-REANALYZE-FUNCTIONALS, unless it's
-;;; some trivial type for which reanalysis is a trivial no-op, or
-;;; unless it doesn't belong in this component at all.
+;;; some trivial type for which reanalysis is a trivial no-op.
 ;;;
 ;;; FUNCTIONAL is returned.
 (defun maybe-reanalyze-functional (functional)
-
   (aver (not (eql (functional-kind functional) :deleted))) ; bug 148
   (aver-live-component *current-component*)
-
   ;; When FUNCTIONAL is of a type for which reanalysis isn't a trivial
   ;; no-op
   (when (typep functional '(or optional-dispatch clambda))
-
-    ;; When FUNCTIONAL knows its component
-    (when (lambda-p functional)
-      (aver (eql (lambda-component functional) *current-component*)))
-
     (pushnew functional
              (component-reanalyze-functionals *current-component*)))
-
   functional)
 
 ;;; Generate a REF node for LEAF, frobbing the LEAF structure as
@@ -797,8 +797,24 @@
               (ir1-convert-srctran start next result lexical-def form))
              (t
               (aver (and (consp lexical-def) (eq (car lexical-def) 'macro)))
-              (ir1-convert start next result
-                           (careful-expand-macro (cdr lexical-def) form))))))
+              ;; Unlike inline expansion, macroexpansion is not optional,
+              ;; but we clearly can't recurse forever.
+              (let ((expansions (memq lexical-def *inline-expansions*)))
+                (if (<= (or (cadr expansions) 0) *inline-expansion-limit*)
+                    (let ((*inline-expansions*
+                            (if expansions
+                                (progn (incf (cadr expansions))
+                                       *inline-expansions*)
+                                (list* lexical-def 1 *inline-expansions*))))
+                      (ir1-convert start next result
+                                   (careful-expand-macro (cdr lexical-def) form)))
+                    (progn
+                      (compiler-warn "Recursion limit reached while expanding local macro ~
+~/sb-ext:print-symbol-with-prefix/" op)
+                      ;; Treat it as an global function, which is probably
+                      ;; what was intended. The expansion thus far could be wrong,
+                      ;; but that's not our problem.
+                      (ir1-convert-global-functoid start next result form op))))))))
         ((or (atom op) (not (eq (car op) 'lambda)))
          (compiler-error "illegal function call"))
         (t

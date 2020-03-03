@@ -223,7 +223,6 @@
  ("src/code/early-time" :c-headers)
  ("src/code/unix" :not-host)
  #+win32 ("src/code/win32" :not-host)
- #+mach  ("src/code/mach"     :not-host)
 
  #+android ("src/code/android-os" :not-host)
  #+sunos ("src/code/sunos-os" :not-host)
@@ -390,7 +389,6 @@
  ("src/code/late-type" :c-headers)
  ;; Compile target-only stuff after all defglobals like *CONS-T-T-TYPE*
  ;; and all type-classes are defined.
- ("src/code/target-type" :not-host)
  ("src/code/deftypes-for-target" :c-headers)
 
  ;; defines IR1-ATTRIBUTES macro, needed by proclaim.lisp
@@ -419,8 +417,6 @@
  ;; CHECK-FUN-NAME defined in proclaim.lisp.
  ("src/code/force-delayed-defbangstructs" :c-headers)
 
- ("src/code/typep" :not-host)
-
  ("src/compiler/compiler-error")
 
  ("src/code/type-init")
@@ -430,6 +426,7 @@
 
  ;; These define target types needed by fndb.lisp.
  ("src/code/package" :c-headers)
+ ("src/code/typep" :not-host)
  ("src/code/random")
  ("src/code/hash-table" :c-headers)
  ("src/code/readtable")
@@ -693,9 +690,6 @@
  ;; maybe call it FORCE-DELAYED-PROCLAIMS?
  ("src/compiler/late-proclaim")
 
- ;; fundamental target macros (e.g. CL:DO and CL:DEFUN) and support
- ;; for them
- ("src/code/defboot")
  ("src/code/setf")
  ("src/code/macros")
  ("src/code/loop")

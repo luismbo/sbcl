@@ -567,6 +567,7 @@ like *STACK-TOP-HINT* and unsupported stuff like *TRACED-FUN-LIST*."
                "MAYBE-NOTE-STATIC-SYMBOL"
                "NOTE"
                "NOTE-CODE-CONSTANT"
+               "OPERAND"
                "PRIN1-QUOTED-SHORT"
                "PRIN1-SHORT" "PRINT-BYTES"
                "PRINT-CURRENT-ADDRESS" "PRINT-INST"
@@ -739,6 +740,9 @@ like *STACK-TOP-HINT* and unsupported stuff like *TRACED-FUN-LIST*."
                ;; There is no one right way to report progress on
                ;; hairy compiles.
                "*COMPILE-PROGRESS*"
+
+               ;; The default behavior for block compilation.
+               "*BLOCK-COMPILE-DEFAULT*"
 
                ;; It can be handy to be able to evaluate expressions involving
                ;; the thing under examination by CL:INSPECT.
@@ -1331,7 +1335,7 @@ possibly temporarily, because it might be used internally."
                "STRUCTURE-INITARG-NOT-KEYWORD" "CONSTANT-MODIFIED"
 
                ;; ..and DEFTYPEs..
-               "HASH"
+               "HASH-CODE"
                "INDEX" "LOAD/STORE-INDEX"
                "SIGNED-BYTE-WITH-A-BITE-OUT"
                "UNSIGNED-BYTE-WITH-A-BITE-OUT"
@@ -1764,7 +1768,7 @@ is a good idea, but see SB-SYS re. blurring of boundaries."
                "BIND" "BINDING-STACK-POINTER-SAP" "BIT-INDEX"
                "BOGUS-ARG-TO-VALUES-LIST-ERROR" "BOOLE-CODE"
                "BOUNDING-INDICES-BAD-ERROR" "BYTE-SPECIFIER" "%BYTE-BLT"
-               "CALLABLE" "FUNCTION-DESIGNATOR"
+               "FUNCTION-DESIGNATOR"
                "CASE-BODY-ERROR"
                "CHARACTER-SET" "CHARACTER-SET-TYPE"
                "CHARACTER-SET-TYPE-PAIRS"
@@ -3487,6 +3491,7 @@ SBCL itself"
   compute-applicable-methods
   slot-makunbound
   make-load-form-saving-slots
+  sb-vm::primitive-object-size
   sb-vm::remove-static-links)
  ;; CLOS implementation
  (sb-mop:class-finalized-p

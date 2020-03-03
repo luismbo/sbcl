@@ -38,7 +38,7 @@ WITH_FEATURES=""
 WITHOUT_FEATURES=""
 FANCY_FEATURES=":sb-core-compression :sb-xref-for-internals :sb-after-xc-core"
 
-perform_host_lisp_check=yes
+perform_host_lisp_check=no
 fancy=false
 some_options=false
 for option
@@ -94,8 +94,8 @@ do
         # Lower down we add :sb-thread for platforms where it can be built.
         fancy=true
         ;;
-      --no-host-lisp-check)
-        perform_host_lisp_check=no
+      --check-host-lisp)
+        perform_host_lisp_check=yes
         ;;
       -*)
         bad_option "Unknown command-line option to $0: \"$option\""
@@ -223,7 +223,9 @@ echo "SBCL_TEST_HOST=\"$SBCL_XC_HOST\"" > output/build-config
 
 if [ $perform_host_lisp_check = yes ]
 then
-    if ! echo '(lisp-implementation-type)' | $SBCL_TEST_HOST; then
+    if echo '(lisp-implementation-type)' | $SBCL_TEST_HOST; then
+        :
+    else
         echo "No working host Common Lisp implementation."
         echo 'See ./INSTALL, the "SOURCE DISTRIBUTION" section'
         exit 1
@@ -442,7 +444,7 @@ case "$sbcl_os" in
         ;;
     openbsd)
         # openbsd 6.0 and newer restrict mmap of RWX pages
-        if [ $(uname -r | tr -d .) -gt 60 ]; then
+        if [ `uname -r | tr -d .` -gt 60 ]; then
             rm -f tools-for-build/mmap-rwx
             LDFLAGS="$LDFLAGS -Wl,-zwxneeded" $GNUMAKE -C tools-for-build mmap-rwx -I ../src/runtime
             if ! ./tools-for-build/mmap-rwx; then
@@ -512,7 +514,7 @@ case "$sbcl_os" in
         link_or_copy hpux-os.h target-os.h
         ;;
     haiku)
-        printf ' :unix :elf :haiku :sb-dynamic-core' >> $ltf
+        printf ' :unix :elf :haiku' >> $ltf
         link_or_copy Config.$sbcl_arch-haiku Config
         link_or_copy $sbcl_arch-haiku-os.h target-arch-os.h
         link_or_copy haiku-os.h target-os.h
@@ -611,7 +613,7 @@ case "$sbcl_os" in
         #
         # (Of course it doesn't provide dlopen, but there is
         # roughly-equivalent magic nevertheless:)
-        printf ' :sb-dynamic-core :os-provides-dlopen' >> $ltf
+        printf ' :os-provides-dlopen' >> $ltf
         printf ' :sb-thread :sb-safepoint :sb-thruption :sb-wtimer' >> $ltf
         printf ' :sb-safepoint-strictly' >> $ltf
         #
@@ -657,7 +659,7 @@ if [ "$sbcl_arch" = "x86" ]; then
     printf ' :fp-and-pc-standard-save' >> $ltf
     case "$sbcl_os" in
     linux | freebsd | gnu-kfreebsd | netbsd | openbsd | sunos | darwin | win32 | dragonfly)
-        printf ' :linkage-table' >> $ltf
+        printf ' :linkage-table :sb-dynamic-core' >> $ltf
     esac
     if [ "$sbcl_os" = "win32" ]; then
         # of course it doesn't provide dlopen, but there is
@@ -669,7 +671,8 @@ if [ "$sbcl_arch" = "x86" ]; then
         sh tools-for-build/openbsd-sigcontext.sh > src/runtime/openbsd-sigcontext.h
     fi
 elif [ "$sbcl_arch" = "x86-64" ]; then
-    printf ' :64-bit :gencgc :stack-grows-downward-not-upward :c-stack-is-control-stack :linkage-table' >> $ltf
+    printf ' :64-bit :gencgc :stack-grows-downward-not-upward :c-stack-is-control-stack' >> $ltf
+    printf ' :linkage-table :sb-dynamic-core' >> $ltf
     printf ' :compare-and-swap-vops :unwind-to-frame-and-call-vop' >> $ltf
     printf ' :fp-and-pc-standard-save' >> $ltf
     printf ' :stack-allocatable-closures :stack-allocatable-vectors' >> $ltf
@@ -683,14 +686,14 @@ elif [ "$sbcl_arch" = "x86-64" ]; then
         printf ' :immobile-space :immobile-code :compact-instance-header' >> $ltf
     esac
 elif [ "$sbcl_arch" = "mips" ]; then
-    printf ' :cheneygc :linkage-table' >> $ltf
+    printf ' :cheneygc :linkage-table :sb-dynamic-core' >> $ltf
     printf ' :stack-allocatable-closures :stack-allocatable-vectors' >> $ltf
     printf ' :stack-allocatable-lists :stack-allocatable-fixed-objects' >> $ltf
     printf ' :alien-callbacks' >> $ltf
 elif [ "$sbcl_arch" = "ppc" ]; then
     printf ' :gencgc :stack-allocatable-closures :stack-allocatable-vectors' >> $ltf
     printf ' :stack-allocatable-lists :stack-allocatable-fixed-objects' >> $ltf
-    printf ' :linkage-table' >> $ltf
+    printf ' :linkage-table :sb-dynamic-core' >> $ltf
     printf ' :compare-and-swap-vops :alien-callbacks' >> $ltf
     if [ "$sbcl_os" = "linux" ]; then
         # Use a C program to detect which kind of glibc we're building on,
@@ -757,7 +760,7 @@ elif [ "$sbcl_arch" = "hppa" ]; then
     printf ' :stack-allocatable-vectors :stack-allocatable-fixed-objects' >> $ltf
     printf ' :stack-allocatable-closures :stack-allocatable-lists' >> $ltf
 elif [ "$sbcl_arch" = "arm" ]; then
-    printf ' :gencgc :linkage-table :alien-callbacks' >> $ltf
+    printf ' :gencgc :linkage-table :sb-dynamic-core :alien-callbacks' >> $ltf
     # As opposed to soft-float or FPA, we support VFP only (and
     # possibly VFPv2 and higher only), but we'll leave the obvious
     # hooks in for someone to add the support later.
@@ -767,7 +770,7 @@ elif [ "$sbcl_arch" = "arm" ]; then
     printf ' :unwind-to-frame-and-call-vop' >> $ltf
     printf ' :fp-and-pc-standard-save' >> $ltf
 elif [ "$sbcl_arch" = "arm64" ]; then
-    printf ' :64-bit :gencgc :linkage-table :fp-and-pc-standard-save' >> $ltf
+    printf ' :64-bit :gencgc :linkage-table :sb-dynamic-core :fp-and-pc-standard-save' >> $ltf
     printf ' :alien-callbacks' >> $ltf
     printf ' :stack-allocatable-lists :stack-allocatable-fixed-objects' >> $ltf
     printf ' :stack-allocatable-vectors :stack-allocatable-closures' >> $ltf

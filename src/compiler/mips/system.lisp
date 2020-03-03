@@ -126,12 +126,11 @@
   (:translate pointer-hash)
   (:args (ptr :scs (any-reg descriptor-reg)))
   (:results (res :scs (any-reg descriptor-reg)))
+  (:temporary (:scs (non-descriptor-reg)) temp)
   (:policy :fast-safe)
   (:generator 1
-    ;; FIXME: It would be better if this would mask the lowtag,
-    ;; and shift the result into a positive fixnum like on x86.
-    (inst sll res ptr 3)
-    (inst srl res res 1)))
+    (inst li temp (lognot fixnum-tag-mask))
+    (inst and res ptr temp)))
 
 
 ;;;; Allocation

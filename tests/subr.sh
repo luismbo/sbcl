@@ -69,7 +69,6 @@ run_sbcl () (
 
 run_sbcl_with_args () (
     set -u
-    echo "$SBCL_RUNTIME" --core "$SBCL_CORE" "$@"
     "$SBCL_RUNTIME" --core "$SBCL_CORE" "$@"
 )
 
@@ -132,6 +131,16 @@ use_test_subdirectory () {
     fi
     mkdir "$TEST_DIRECTORY"
     cd "$TEST_DIRECTORY"
+    trap "cleanup_test_subdirectory" EXIT
+}
+
+# Do the above but without changing the current directory
+create_test_subdirectory () {
+    if test -d "$TEST_DIRECTORY"
+    then
+        cleanup_test_subdirectory
+    fi
+    mkdir "$TEST_DIRECTORY"
     trap "cleanup_test_subdirectory" EXIT
 }
 

@@ -377,9 +377,10 @@
         (node-ends-block node)))))
 
 (defun lexenv-contains-lambda (lambda parent-lexenv)
-  (loop for lexenv = (lambda-call-lexenv lambda)
+  (loop for lexenv = (lambda-lexenv lambda)
         then (let ((lambda (lexenv-lambda lexenv)))
-               (and (lambda-call-lexenv lambda)))
+               (and lambda
+                    (lambda-call-lexenv lambda)))
         while lexenv
         thereis
         (loop for parent = lexenv then (lexenv-parent parent)
@@ -600,6 +601,9 @@
        (lambda-home fun))
     (when (eq (lambda-home fun) fun)
       (return fun))))
+
+(defun lambda-parent (lambda)
+  (lexenv-lambda (lambda-lexenv lambda)))
 
 (declaim (ftype (sfunction (node) component) node-component))
 (defun node-component (node)
@@ -1145,7 +1149,8 @@
                           (lexenv-disabled-package-locks default))
                          (policy (lexenv-policy default))
                          (user-data (lexenv-user-data default))
-                         (flushable (lexenv-flushable default)))
+                         (flushable (lexenv-flushable default))
+                         (parent default))
   (macrolet ((frob (var slot)
                `(let ((old (,slot default)))
                   (if ,var
@@ -1162,7 +1167,7 @@
      cleanup handled-conditions disabled-package-locks
      policy
      user-data
-     default)))
+     parent)))
 
 ;;; Makes a LEXENV, suitable for using in a MACROLET introduced
 ;;; macroexpander
@@ -1616,7 +1621,7 @@
 ;;; that the lambda is unreachable, so that its body may be
 ;;; deleted. We set FUNCTIONAL-KIND to :DELETED and rely on
 ;;; IR1-OPTIMIZE to delete its blocks.
-(defun delete-lambda (clambda &optional (delete-children t))
+(defun delete-lambda (clambda)
   (declare (type clambda clambda))
   (let ((original-kind (functional-kind clambda))
         (bind (lambda-bind clambda)))
@@ -1625,24 +1630,6 @@
     (aver (or (eq original-kind :zombie) bind))
     (setf (functional-kind clambda) :deleted)
     (setf (lambda-bind clambda) nil)
-
-    (when delete-children
-      (labels ((delete-children (lambda)
-                 (dolist (child (lambda-children lambda))
-                   (cond ((eq (functional-kind child) :deleted)
-                          (delete-children child))
-                         ;; Can happen when all optional entries produce
-                         ;; errors, making the main entry unreachable,
-                         ;; but the XEP should not be deleted, as it can
-                         ;; still be reachable.
-                         ((and (eq (functional-kind child) :external)
-                               (eq (main-entry (functional-entry-fun child)) clambda)))
-                         (t
-                          (delete-lambda child nil)
-                          (delete-children child))))
-                 (setf (lambda-children lambda) nil)
-                 (setf (lambda-parent lambda) nil)))
-        (delete-children clambda)))
 
     ;; (The IF test is (FUNCTIONAL-SOMEWHAT-LETLIKE-P CLAMBDA), except
     ;; that we're using the old value of the KIND slot, not the
@@ -1653,16 +1640,7 @@
        (let ((bind-block (node-block bind)))
          (mark-for-deletion bind-block))
        (let ((home (lambda-home clambda)))
-         (setf (lambda-lets home) (delete clambda (lambda-lets home))))
-       ;; KLUDGE: In presence of NLEs we cannot always understand that
-       ;; LET's BIND dominates its body [for a LET "its" body is not
-       ;; quite its]; let's delete too dangerous for IR2 stuff. --
-       ;; APD, 2004-01-01
-       (dolist (var (lambda-vars clambda))
-         (flet ((delete-node (node)
-                  (mark-for-deletion (node-block node))))
-         (mapc #'delete-node (leaf-refs var))
-         (mapc #'delete-node (lambda-var-sets var)))))
+         (setf (lambda-lets home) (delete clambda (lambda-lets home)))))
       (t
        ;; Function has no reachable references.
        (dolist (ref (lambda-refs clambda))
@@ -1780,6 +1758,12 @@
 ;;; environment and is in the current component.
 (defun defined-fun-functional (defined-fun)
   (let ((functionals (defined-fun-functionals defined-fun)))
+    ;; FIXME: If we are block compiling, forget about finding the
+    ;; right functional. Just pick the first one we see and hope
+    ;; people don't mix inlined functions and policy with block
+    ;; compiling. (For now)
+    (when (block-compile *compilation*)
+      (return-from defined-fun-functional (first functionals)))
     (when functionals
       (let* ((sample (car functionals))
              (there (lambda-parent (if (lambda-p sample)
@@ -2371,6 +2355,42 @@ is :ANY, the function name is not checked."
       (change-ref-leaf ref new-leaf)))
   (values))
 
+;;; Do almost the same thing that EQUAL does, but consider strings
+;;; to be dissimilar if their element types differ.
+;;; When cross-compiling, any STRING= strings are similar
+;;; because there is logically only a BASE-STRING type.
+;;; ISTM that the language botched this up by not defining a standard
+;;; predicate which returns T if and only if objects are similar.
+(defun similarp (x y)
+  #+sb-xc-host (equal x y)
+  #-sb-xc-host
+  (named-let recurse ((x x) (y y))
+    (cond ((%eql x y) t)
+          ((consp x)
+           (and (consp y)
+                (recurse (car x) (car y))
+                (recurse (cdr x) (cdr y))))
+          ((stringp x)
+           (and (stringp y)
+                ;; (= (widetag-of ...)) would be too strict, because a simple string
+                ;; can be be similar to a non-simple string.
+                (eq (array-element-type x)
+                    (array-element-type y))
+                (string= x y)))
+          (t ; PATHNAME and BIT-vector can fall back upon EQUAL
+           ;; This could be slightly wrong, but so it always was, because we use
+           ;; (and have used) EQUAL for PATHNAME in SB-C::FIND-CONSTANT, but:
+           ;;   "Two pathnames S and C are similar if all corresponding pathname components are similar."
+           ;; and we readily admit that similarity of strings requires equal element types.
+           ;; So this is slightly dubious:
+           ;; (EQUAL (MAKE-PATHNAME :NAME (COERCE "A" 'SB-KERNEL:SIMPLE-CHARACTER-STRING))
+           ;;        (MAKE-PATHNAME :NAME (COERCE "A" 'BASE-STRING))) => T
+           ;; On the other hand, nothing says that the pathname constructors such as
+           ;; MAKE-PATHNAME and MERGE-PATHNAMES don't convert to a canonical representation
+           ;; which renders them EQUAL when all strings are STRING=.
+           ;; This area of the language spec seems to have been a clusterfsck.
+           (equal x y)))))
+
 ;;; Return a LEAF which represents the specified constant object. If
 ;;; the object is not in (CONSTANTS *IR1-NAMESPACE*), then we create a new
 ;;; constant LEAF and enter it. If we are producing a fasl file, make sure that
@@ -2392,7 +2412,8 @@ is :ANY, the function name is not checked."
   ;;  1. layouts go in the hash-table so that a code component references
   ;;     any given layout at most once
   ;;  2. STANDARD-OBJECT layouts use MAKE-LOAD-FORM
-  (let ((faslp (producing-fasl-file)))
+  (let ((faslp (producing-fasl-file))
+        (ns (if (boundp '*ir1-namespace*) *ir1-namespace*)))
     (labels ((core-coalesce-p (x)
                ;; True for things which retain their identity under EQUAL,
                ;; so we can safely share the same CONSTANT leaf between
@@ -2417,26 +2438,7 @@ is :ANY, the function name is not checked."
                        (descend x)))))
              (atom-colesce-p (x)
                (or (core-coalesce-p x)
-                   ;; We *could* coalesce base-strings as well,
-                   ;; but we'd need a separate hash-table for
-                   ;; that, since we are not allowed to coalesce
-                   ;; base-strings with non-base-strings.
-                   (typep x
-                          '(or bit-vector
-                            ;; in the cross-compiler, we coalesce
-                            ;; all strings with the same contents,
-                            ;; because we will end up dumping them
-                            ;; as base-strings anyway.  In the
-                            ;; real compiler, we're not allowed to
-                            ;; coalesce regardless of string
-                            ;; specialized element type, so we
-                            ;; KLUDGE by coalescing only character
-                            ;; strings (the common case) and
-                            ;; punting on the other types.
-                            #+sb-xc-host
-                            string
-                            #-sb-xc-host
-                            (vector character)))))
+                   (typep x '(or bit-vector string))))
              (file-coalesce-p (x)
                ;; CLHS 3.2.4.2.2: We are also allowed to coalesce various
                ;; other things when file-compiling.
@@ -2457,19 +2459,26 @@ is :ANY, the function name is not checked."
       #-sb-xc-host
       (when (and (not faslp) (simple-string-p object))
         (logically-readonlyize object nil))
-      (let ((hashp (and (boundp '*ir1-namespace*)
-                        (if faslp
-                            (file-coalesce-p object)
-                            (core-coalesce-p object)))))
-        (awhen (and hashp (gethash object (constants *ir1-namespace*)))
-          (return-from find-constant it))
+      ;; Has this identical object been seen before? Bail out early if so.
+      (awhen (and ns (gethash object (eq-constants ns)))
+        (return-from find-constant it))
+      (let ((coalescep (and ns
+                            (if faslp
+                                (file-coalesce-p object)
+                                (core-coalesce-p object)))))
+        (when coalescep
+          (dolist (candidate (gethash object (similar-constants ns)))
+            (when (similarp (constant-value candidate) object)
+              (return-from find-constant candidate))))
         (when (and faslp (not (sb-fasl:dumpable-layout-p object)))
           (if namep
               (maybe-emit-make-load-forms object name)
               (maybe-emit-make-load-forms object)))
         (let ((new (make-constant object)))
-          (when hashp
-            (setf (gethash object (constants *ir1-namespace*)) new))
+          (when ns
+            (setf (gethash object (eq-constants ns)) new)
+            (when coalescep
+              (push new (gethash object (similar-constants ns)))))
           new)))))
 
 ;;; Return true if X and Y are lvars whose only use is a
@@ -2659,10 +2668,6 @@ is :ANY, the function name is not checked."
   (declare (type basic-combination call))
   (aver (eq (basic-combination-kind call) :local))
   (ref-leaf (lvar-uses (basic-combination-fun call))))
-
-(defvar *inline-expansion-limit* 50
-  "an upper limit on the number of inline function calls that will be expanded
-   in any given code object (single function or block compilation)")
 
 ;;; Check whether NODE's component has exceeded its inline expansion
 ;;; limit, and warn if so, returning NIL.
@@ -3069,7 +3074,11 @@ is :ANY, the function name is not checked."
           do (nsubst new old (lvar-function-designator-annotation-deps dep))
           when (lvar-p new)
           do
-          (pushnew dep (lvar-dependent-annotations new))))
+          (pushnew dep (lvar-dependent-annotations new) :test #'eq))
+    (loop for dep in (lvar-dependent-nodes old)
+          when (lvar-p new)
+          do
+          (pushnew dep (lvar-dependent-nodes new) :test #'eq)))
   (when (lvar-p new)
     (setf
      (lvar-annotations new)

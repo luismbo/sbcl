@@ -246,13 +246,15 @@
   (:temporary (:sc any-reg :offset cfunc-offset
                    :from (:argument 0) :to (:result 0)) cfunc)
   (:temporary (:sc control-stack :offset nfp-save-offset) nfp-save)
+  (:temporary (:sc any-reg :offset nl3-offset) tramp) ; = $at
   (:vop-var vop)
   (:generator 0
     (let ((cur-nfp (current-nfp-tn vop)))
       (when cur-nfp
         (store-stack-tn nfp-save cur-nfp))
-      (inst jal (make-fixup "call_into_c" :foreign))
-      (move cfunc function t)
+      (load-symbol-value tramp call-into-c)
+      (inst jal tramp)
+      (inst move cfunc function)
       (when cur-nfp
         (load-stack-tn cur-nfp nfp-save)))))
 

@@ -285,14 +285,9 @@
 (defknown lcm (&rest integer) unsigned-byte
     (movable foldable flushable))
 
-#+sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
-(defknown exp (number) irrational
-  (movable foldable flushable recursive)
-  :derive-type #'result-type-float-contagion)
-
-#-sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
 (defknown exp (number) irrational
   (movable foldable flushable recursive))
+
 
 (defknown expt (number number) number
   (movable foldable flushable recursive))
@@ -308,25 +303,6 @@
 (defknown cis (real) (complex float)
   (movable foldable flushable))
 
-#+sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
-(progn
-(defknown (sin cos) (number)
-  (or (float $-1.0 $1.0) (complex float))
-  (movable foldable flushable recursive)
-  :derive-type #'result-type-float-contagion)
-
-(defknown atan
-  (number &optional real) irrational
-  (movable foldable unsafely-flushable recursive)
-  :derive-type #'result-type-float-contagion)
-
-(defknown (tan sinh cosh tanh asinh)
-  (number) irrational (movable foldable flushable recursive)
-  :derive-type #'result-type-float-contagion)
-) ; PROGN
-
-#-sb-xc-host ; (See CROSS-FLOAT-INFINITY-KLUDGE.)
-(progn
 (defknown (sin cos) (number)
   (or (float $-1.0 $1.0) (complex float))
   (movable foldable flushable recursive))
@@ -337,7 +313,6 @@
 
 (defknown (tan sinh cosh tanh asinh)
   (number) irrational (movable foldable flushable recursive))
-) ; PROGN
 
 (defknown (asin acos acosh atanh)
   (number) irrational
@@ -1064,8 +1039,8 @@
   (foldable flushable))
 (defknown hash-table-size (hash-table) index (flushable))
 (defknown hash-table-test (hash-table) symbol (foldable flushable))
-(defknown sxhash (t) hash (foldable flushable))
-(defknown psxhash (t &optional t) hash (foldable flushable))
+(defknown sxhash (t) hash-code (foldable flushable))
+(defknown psxhash (t &optional t) hash-code (foldable flushable))
 (defknown hash-table-equalp (hash-table hash-table) boolean (foldable flushable))
 ;; To avoid emitting code to test for nil-function-returned
 (defknown (sb-impl::signal-corrupt-hash-table
@@ -1265,19 +1240,20 @@
 
 ;;;; from the "Streams" chapter:
 
-;;; FIXME: the first 5 of these should be specified to return a particular
-;;; subtype of STREAM, just like MAKE-STRING-{INPUT,OUTPUT}-STREAM do.
-(defknown make-synonym-stream (symbol) stream (flushable))
-(defknown make-broadcast-stream (&rest stream) stream (unsafely-flushable))
-(defknown make-concatenated-stream (&rest stream) stream (unsafely-flushable))
-(defknown make-two-way-stream (stream stream) stream (unsafely-flushable))
-(defknown make-echo-stream (stream stream) stream (flushable))
+(defknown make-synonym-stream (symbol) synonym-stream (flushable))
+(defknown make-broadcast-stream (&rest stream) broadcast-stream (unsafely-flushable))
+(defknown make-concatenated-stream (&rest stream) concatenated-stream (unsafely-flushable))
+(defknown make-two-way-stream (stream stream) two-way-stream (unsafely-flushable))
+(defknown make-echo-stream (stream stream) echo-stream (flushable))
 (defknown make-string-input-stream (string &optional index sequence-end)
   sb-impl::string-input-stream
   (flushable))
 (defknown make-string-output-stream (&key (:element-type type-specifier))
   sb-impl::string-output-stream
   (flushable))
+;; FIXME: sb-impl::string-output-stream as the result type causes a few
+;; "CROSS-TYPEP uncertain: CTYPEP T #<UNKNOWN-TYPE STRING-OUTPUT-STREAM>"
+;; warnings which need to be resolved.
 (defknown get-output-stream-string (stream) simple-string ())
 (defknown streamp (t) boolean (movable foldable flushable))
 (defknown stream-element-type (stream) type-specifier ; can it return a CLASS?
@@ -1662,10 +1638,12 @@
    (:verbose t)
    (:print t)
    (:external-format external-format-designator)
+   (:progress t)
 
    ;; extensions
    (:trace-file t)
    (:block-compile t)
+   (:entry-points list)
    (:emit-cfasl t))
   (values (or pathname null) boolean boolean))
 

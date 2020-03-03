@@ -40,6 +40,8 @@
   (virtual-location 0 :type address)
   (storage-info nil :type (or null storage-info))
   (code nil :type (or null code-component))
+  ;; list of function and fdefn constants extracted from code header
+  (code-callables :?)
   ;; the byte offset beyond CODE-INSTRUCTIONS of CODE which
   ;; corresponds to offset 0 in this segment
   (initial-offset 0 :type index)
@@ -76,7 +78,8 @@
               :type (member :big-endian :little-endian))
   ;; current instruction as found in instruction space
   (inst)
-  (operands)
+  (operands (make-array 10) :read-only t) ; enough for anybody
+  (n-operands 0)
   ;; for user code to track decoded bits, cleared each time after a
   ;; non-prefix instruction is processed
   (inst-properties 0 :type fixnum)

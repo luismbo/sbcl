@@ -2667,3 +2667,128 @@
      `(lambda ()
         (eval (and (if (eval 0) (eval 0) (eval 0)) t)))
      (() t))))
+
+(with-test (:name :make-array-half-finished-transform)
+  (checked-compile-and-assert
+      (:allow-warnings t)
+      `(lambda ()
+         (make-array 6 :fill-pointer 33))
+    (() (condition '(not program-error)))))
+
+(with-test (:name :nested-if+let)
+  (checked-compile-and-assert
+      ()
+      `(lambda ()
+         (let (x)
+           (when x
+             (setq x 1))
+           (let ((y (if x
+                        t
+                        nil)))
+             (if y
+                 y
+                 (let ((x x))
+                   x)))))
+      (() nil)))
+
+(with-test (:name :let-var-immediately-used-p-deleted-lambda)
+  (checked-compile-and-assert
+   ()
+   `(lambda (c)
+      (if (and nil
+               (or
+                (zerop (count (unwind-protect 1) '(1)))
+                c))
+          1
+          0))
+   ((2) 0)))
+
+(with-test (:name :dce-local-functions)
+  (checked-compile-and-assert
+      ()
+      `(lambda ()
+         (block out
+           (labels ((mmm (z vars)
+                      (when vars
+                        (mmm z vars))))
+             (mmm 1 (progn
+                      (dotimes (a 1) (return-from out 10))
+                      (dotimes (b 3) (catch 'b))))
+             (dotimes (c 3) (catch 'c)))))
+    (() 10)))
+
+(with-test (:name :dce-more-often)
+  (checked-compile-and-assert
+      ()
+      `(lambda (a)
+         (+ 1
+            (if t
+                0
+                (progn
+                  (tagbody
+                   p
+                     (tagbody
+                        (let ((a (lambda () (go o))))
+                          (declare (special a)))
+                      o)
+                     (when (< a 1)
+                       (go p)))
+                  2))))
+    ((1) 1)))
+
+(with-test (:name :ir1-optimize-constant-fold-before-giving-up)
+  (checked-compile-and-assert
+      ()
+      `(lambda (a)
+         (+ 2 (- (let ((sum 0))
+                   (declare (type fixnum sum))
+                   (block nil
+                     (tagbody
+                      next
+                        (cond ((>= sum '0)
+                               (go end))
+                              (a
+                               (ceiling 1 (unwind-protect 0))
+                               (incf sum)))
+                        (go next)
+                      end))
+                   sum))))
+    ((1) 2)))
+
+(with-test (:name :position-case-otherwise)
+  (checked-compile-and-assert
+      ()
+      `(lambda (x)
+         (position x '(a otherwise b t nil)))
+    (('a) 0)
+    (('otherwise) 1)
+    ((nil) 4)
+    ((t) 3)))
+
+(with-test (:name :unreachable-component-propagate-let-args)
+  (checked-compile-and-assert
+      ()
+      `(lambda ()
+         (let ((p 0))
+           (flet ((f (&key)
+                    (flet ((g (&optional
+                                 (z
+                                  (return-from f (+ (dotimes (i 0 0)) p))))
+                             p))))))
+           p))
+    (() 0)))
+
+(with-test (:name :dce-through-optional-dispatch)
+  (checked-compile-and-assert
+      ()
+      `(lambda (x)
+         (flet ((z (&optional a)
+                  (declare (ignore a))
+                  123))
+           (let ((z #'z))
+             (when x
+               (unless x
+                 (setf z 10)))
+                   (funcall z))))
+    ((nil) 123)
+    ((t) 123)))

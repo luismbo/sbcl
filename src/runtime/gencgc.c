@@ -2284,16 +2284,20 @@ update_page_write_prot(page_index_t page)
             // looks like simple-fun-widetag. We can't naively back up to the
             // underlying code object since the alleged header might not be one.
             int pointee_gen = gen; // Make comparison fail if we fall through
-            if (functionp((lispobj)ptr) && header_widetag(header) == SIMPLE_FUN_WIDETAG) {
-                lispobj* code = fun_code_header(FUNCTION((lispobj)ptr));
-                // This is a heuristic, since we're not actually looking for
-                // an object boundary. Precise scanning of 'page' would obviate
-                // the guard conditions here.
-                if (immobile_space_p((lispobj)code)
-                    && widetag_of(code) == CODE_HEADER_WIDETAG)
-                    pointee_gen = __immobile_obj_generation(code);
-            } else {
-                pointee_gen = __immobile_obj_generation(native_pointer((lispobj)ptr));
+            switch (header_widetag(header)) {
+            case SIMPLE_FUN_WIDETAG:
+                if (functionp((lispobj)ptr)) {
+                    lispobj* code = fun_code_header(FUNCTION((lispobj)ptr));
+                    // This is a heuristic, since we're not actually looking for
+                    // an object boundary. Precise scanning of 'page' would obviate
+                    // the guard conditions here.
+                    if (immobile_space_p((lispobj)code)
+                        && widetag_of(code) == CODE_HEADER_WIDETAG)
+                        pointee_gen = immobile_obj_generation(code);
+                }
+                break;
+            default:
+                pointee_gen = immobile_obj_generation(native_pointer((lispobj)ptr));
             }
             // A bogus generation number implies a not-really-pointer,
             // but it won't cause misbehavior.
@@ -2788,8 +2792,7 @@ generation_index_t gc_gen_of(lispobj obj, int defaultval) {
     if (page >= 0) return page_table[page].gen;
 #ifdef LISP_FEATURE_IMMOBILE_SPACE
     if (immobile_space_p(obj))
-        return immobile_obj_gen_bits(native_pointer(obj))
-            & IMMOBILE_OBJ_GENERATION_MASK;
+        return immobile_obj_generation(base_pointer(obj));
 #endif
     return defaultval;
 }
@@ -3775,6 +3778,9 @@ collect_garbage(generation_index_t last_gen)
      *   in a unithread build.
      * So we need to close them for those two cases.
      */
+#ifdef SINGLE_THREAD_BOXED_REGION
+    ensure_region_closed(SINGLE_THREAD_BOXED_REGION, BOXED_PAGE_FLAG);
+#endif
     struct thread *th;
     for_each_thread(th) {
         ensure_region_closed(&th->alloc_region, BOXED_PAGE_FLAG);
@@ -4155,6 +4161,8 @@ alloc(sword_t nbytes)
     struct thread *thread = arch_os_get_current_thread();
 #ifdef LISP_FEATURE_SB_THREAD
     struct alloc_region *region = &thread->alloc_region;
+#elif defined SINGLE_THREAD_BOXED_REGION
+    struct alloc_region *region = SINGLE_THREAD_BOXED_REGION;
 #else
     struct alloc_region *region = &boxed_region;
 #endif
@@ -4445,6 +4453,9 @@ gc_and_save(char *filename, boolean prepend_runtime,
     prepare_for_final_gc();
     gencgc_alloc_start_page = 0;
     collect_garbage(HIGHEST_NORMAL_GENERATION+1);
+#ifdef SINGLE_THREAD_BOXED_REGION // clean up static-space object pre-save.
+    gc_init_region(SINGLE_THREAD_BOXED_REGION);
+#endif
     /* All global allocation regions should be empty */
     ASSERT_REGIONS_CLOSED();
     // Enforce (rather, warn for lack of) self-containedness of the heap
@@ -4462,6 +4473,7 @@ gc_and_save(char *filename, boolean prepend_runtime,
 #ifdef LISP_FEATURE_X86_64
     untune_asm_routines_for_microarch();
 #endif
+    os_unlink_runtime();
 
     /* The number of dynamic space pages saved is based on the allocation
      * pointer, while the number of PTEs is based on next_free_page.

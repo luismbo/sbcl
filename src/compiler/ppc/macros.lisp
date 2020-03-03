@@ -37,62 +37,41 @@
 (defmacro load-symbol (reg symbol)
   `(inst addi ,reg null-tn (static-symbol-offset ,symbol)))
 
-(macrolet
-    ((frob (slot)
-       (let ((loader (intern (concatenate 'simple-string
-                                          "LOAD-SYMBOL-"
-                                          (string slot))))
-             (storer (intern (concatenate 'simple-string
-                                          "STORE-SYMBOL-"
-                                          (string slot))))
-             (offset (intern (concatenate 'simple-string
-                                          "SYMBOL-"
-                                          (string slot)
-                                          "-SLOT")
-                             (find-package "SB-VM"))))
-         `(progn
-            (defmacro ,loader (reg symbol)
-              `(inst lwz ,reg null-tn
-                     (+ (static-symbol-offset ',symbol)
-                        (ash ,',offset word-shift)
-                        (- other-pointer-lowtag))))
-            (defmacro ,storer (reg symbol)
-              `(inst stw ,reg null-tn
-                     (+ (static-symbol-offset ',symbol)
-                        (ash ,',offset word-shift)
-                        (- other-pointer-lowtag))))))))
-  (frob value)
-  (frob function)
+(defmacro load-symbol-value (reg symbol)
+  `(inst lwz ,reg null-tn (+ (static-symbol-offset ',symbol)
+                             (ash symbol-value-slot word-shift)
+                             (- other-pointer-lowtag))))
+(defmacro store-symbol-value (reg symbol)
+  `(inst stw ,reg null-tn (+ (static-symbol-offset ',symbol)
+                             (ash symbol-value-slot word-shift)
+                             (- other-pointer-lowtag))))
 
-  ;; FIXME: These are only good for static-symbols, so why not
-  ;; statically-allocate the static-symbol TLS slot indices at
-  ;; cross-compile time so we can just use a fixed offset within the
-  ;; TLS block instead of mucking about with the extra memory access
-  ;; (and temp register, for stores)?
-  #+sb-thread
-  (defmacro load-tl-symbol-value (reg symbol)
-    `(progn
-       (inst lwz ,reg null-tn
-             (+ (static-symbol-offset ',symbol)
-                (ash symbol-tls-index-slot word-shift)
-                (- other-pointer-lowtag)))
-       (inst lwzx ,reg thread-base-tn ,reg)))
-  #-sb-thread
-  (defmacro load-tl-symbol-value (reg symbol)
-    `(load-symbol-value ,reg ,symbol))
-
-  #+sb-thread
-  (defmacro store-tl-symbol-value (reg symbol temp)
-    `(progn
-       (inst lwz ,temp null-tn
-             (+ (static-symbol-offset ',symbol)
-                (ash symbol-tls-index-slot word-shift)
-                (- other-pointer-lowtag)))
-       (inst stwx ,reg thread-base-tn ,temp)))
-  #-sb-thread
-  (defmacro store-tl-symbol-value (reg symbol temp)
-    (declare (ignore temp))
-    `(store-symbol-value ,reg ,symbol)))
+;; FIXME: These are only good for static-symbols, so why not
+;; statically-allocate the static-symbol TLS slot indices at
+;; cross-compile time so we can just use a fixed offset within the
+;; TLS block instead of mucking about with the extra memory access
+;; (and temp register, for stores)?
+#+sb-thread
+(progn
+(defmacro load-tl-symbol-value (reg symbol)
+  `(progn
+     (inst lwz ,reg null-tn (+ (static-symbol-offset ',symbol)
+                               (ash symbol-tls-index-slot word-shift)
+                               (- other-pointer-lowtag)))
+     (inst lwzx ,reg thread-base-tn ,reg)))
+(defmacro store-tl-symbol-value (reg symbol temp)
+  `(progn
+     (inst lwz ,temp null-tn (+ (static-symbol-offset ',symbol)
+                                (ash symbol-tls-index-slot word-shift)
+                                (- other-pointer-lowtag)))
+     (inst stwx ,reg thread-base-tn ,temp))))
+#-sb-thread
+(progn
+(defmacro load-tl-symbol-value (reg symbol)
+  `(load-symbol-value ,reg ,symbol))
+(defmacro store-tl-symbol-value (reg symbol temp)
+  (declare (ignore temp))
+  `(store-symbol-value ,reg ,symbol)))
 
 (defmacro load-type (target source &optional (offset 0))
   "Loads the type bits of a pointer into target independent of
@@ -207,27 +186,23 @@
              (inst addi alloc-tn alloc-tn size)
              (inst add alloc-tn alloc-tn size)))
   #+gencgc
-  (let ((imm-size (typep size '(unsigned-byte 15))))
+  (binding*  ((imm-size (typep size '(unsigned-byte 15)))
+              ((region-base-tn field-offset)
+               #-sb-thread (values null-tn
+                                   (- (+ static-space-start
+                                         ;; skip over the array header
+                                         (* 2 n-word-bytes))
+                                      nil-value))
+               #+sb-thread (values thread-base-tn
+                                   (* thread-alloc-region-slot n-word-bytes))))
+
     (unless imm-size ; Make temp-tn be the size
       (if (numberp size)
           (inst lr temp-tn size)
           (move temp-tn size)))
 
-    #-sb-thread
-    (inst lr flag-tn (make-fixup "gc_alloc_region" :foreign))
-    #-sb-thread
-    (inst lwz result-tn flag-tn 0)
-    #+sb-thread
-    (inst lwz result-tn thread-base-tn (* thread-alloc-region-slot
-                                          n-word-bytes))
-
-       ;; we can optimize this to only use one fixup here, once we get
-       ;; it working
-       ;; (inst lr ,flag-tn (make-fixup "gc_alloc_region" :foreign 4))
-       ;; (inst lwz ,flag-tn ,flag-tn 0)
-    #-sb-thread (inst lwz flag-tn flag-tn 4)
-    #+sb-thread (inst lwz flag-tn thread-base-tn (* (1+ thread-alloc-region-slot)
-                                                    n-word-bytes))
+    (inst lwz result-tn region-base-tn field-offset)
+    (inst lwz flag-tn region-base-tn (+ field-offset n-word-bytes)) ; region->end_addr
 
     (without-scheduling ()
          ;; CAUTION: The C code depends on the exact order of
@@ -250,15 +225,8 @@
          (inst tw :lgt result-tn flag-tn)
 
          ;; The C code depends on this instruction sequence taking up
-         ;; #-sb-thread three #+sb-thread one machine instruction.
-         ;; The lr of a fixup counts as two instructions.
-         #-sb-thread
-         (inst lr flag-tn (make-fixup "gc_alloc_region" :foreign))
-         #-sb-thread
-         (inst stw result-tn flag-tn 0)
-         #+sb-thread
-         (inst stw result-tn thread-base-tn (* thread-alloc-region-slot
-                                               n-word-bytes)))
+         ;; one machine instruction.
+         (inst stw result-tn region-base-tn field-offset))
 
        ;; Should the allocation trap above have fired, the runtime
        ;; arranges for execution to resume here, just after where we

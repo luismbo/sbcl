@@ -36,6 +36,27 @@
   (tagify alloc-tn rsp-tn lowtag)
   (values))
 
+;;; For assemfile
+#+(and avx2 sb-xc-host)
+(defvar *avx-registers-used-p* nil)
+
+#+avx2
+(defun avx-registers-used-p ()
+  (or #+sb-xc-host *avx-registers-used-p*
+      (when (and #+sb-xc-host (boundp '*component-being-compiled*))
+        (let ((comp (component-info *component-being-compiled*)))
+          (or (sb-c::ir2-component-avx2-used-p comp)
+              (flet ((used-p (tn)
+                       (do ((tn tn (sb-c::tn-next tn)))
+                           ((null tn))
+                         (when (sc-is tn avx2-reg
+                                      int-avx2-reg
+                                      double-avx2-reg single-avx2-reg)
+                           (return-from avx-registers-used-p
+                             (setf (sb-c::ir2-component-avx2-used-p comp) t))))))
+                (used-p (sb-c::ir2-component-normal-tns comp))
+                (used-p (sb-c::ir2-component-wired-tns comp))))))))
+
 (defun %alloc-tramp (node result-tn size lowtag)
   (cond ((typep size '(and integer (not (signed-byte 32))))
          ;; MOV accepts large immediate operands, PUSH does not
@@ -48,7 +69,12 @@
   ;; But the assembly routine is hand-written, not generated, and it has to match,
   ;; so there's not much that can be done to generalize it.
   (let ((to-r11 (location= result-tn r11-tn)))
-    (invoke-asm-routine 'call (if to-r11 'alloc-tramp-r11 'alloc-tramp) node)
+    (invoke-asm-routine 'call (cond
+                                #+avx2
+                                ((avx-registers-used-p)
+                                 (if to-r11 'alloc-tramp-r11-avx2 'alloc-tramp-avx2))
+                                (t
+                                 (if to-r11 'alloc-tramp-r11 'alloc-tramp))) node)
     (unless to-r11
       (inst pop result-tn)))
   (unless (eql lowtag 0)
@@ -98,13 +124,6 @@
   (aver (and (not (location= alloc-tn temp-reg-tn))
              (or (integerp size) (not (location= size temp-reg-tn)))))
 
-  #+(and (not sb-thread) sb-dynamic-core)
-  ;; We'd need a spare reg in which to load boxed_region from the linkage table.
-  ;; Could push/pop any random register on the stack and own it temporarily,
-  ;; but seeing as nobody cared about this, just punt.
-  (%alloc-tramp node alloc-tn size lowtag)
-
-  #-(and (not sb-thread) sb-dynamic-core)
   ;; Otherwise do the normal inline allocation thing
   (let ((NOT-INLINE (gen-label))
         (DONE (gen-label))
@@ -113,11 +132,13 @@
         ;; thread->alloc_region.free_pointer
         (free-pointer
          #+sb-thread (thread-slot-ea thread-alloc-region-slot)
-         #-sb-thread (ea (make-fixup "gc_alloc_region" :foreign)))
+         #-sb-thread (ea (+ static-space-start
+                            (ash vector-data-offset word-shift))))
         ;; thread->alloc_region.end_addr
         (end-addr
          #+sb-thread (thread-slot-ea (1+ thread-alloc-region-slot))
-         #-sb-thread (ea (make-fixup "gc_alloc_region" :foreign 8))))
+         #-sb-thread (ea (+ static-space-start
+                            (ash (1+ vector-data-offset) word-shift)))))
 
     (cond ((or in-elsewhere
                ;; large objects will never be made in a per-thread region

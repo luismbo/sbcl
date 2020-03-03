@@ -259,11 +259,6 @@
                   :system-lambda-p system-lambda))
          (result-ctran (make-ctran))
          (result-lvar (make-lvar)))
-
-    (awhen (lexenv-lambda *lexenv*)
-      (push lambda (lambda-children it))
-      (setf (lambda-parent lambda) it))
-
     ;; just to check: This function should fail internal assertions if
     ;; we didn't set up a valid debug name above.
     ;;
@@ -891,9 +886,7 @@
                                      :keyp keyp
                                      :%source-name source-name
                                      :%debug-name debug-name
-                                     :plist `(:ir1-environment
-                                              (,*lexenv*
-                                               ,*current-path*))))
+                                     :source-path *current-path*))
         (min (or (position-if #'lambda-var-arg-info vars) (length vars))))
     (aver-live-component *current-component*)
     (ir1-convert-hairy-args res () () () () vars nil body aux-vars aux-vals
@@ -1020,6 +1013,14 @@
           ((typep expr '(or (cons (eql declare)) string))) ; DECL | DOCSTRING
           (t (return nil)))))
 
+(defun block-compilation-non-entry-point (name)
+  (and (boundp 'sb-c::*compilation*)
+       (let* ((compilation sb-c::*compilation*)
+              (entry-points (sb-c::entry-points compilation)))
+         (and (sb-c::block-compile compilation)
+              entry-points
+              (not (member name entry-points :test #'equal))))))
+
 ;;; helper for LAMBDA-like things, to massage them into a form
 ;;; suitable for IR1-CONVERT-LAMBDA.
 (defun ir1-convert-lambdalike (thing
@@ -1046,6 +1047,8 @@
                  (info (info :function :info name)))
              (when (has-toplevelness-decl lambda-expression)
                (setf (functional-top-level-defun-p res) t))
+             ;; FIXME: Should non-entry block compiled defuns have
+             ;; this propagate?
              (assert-global-function-definition-type name res)
              (push res (defined-fun-functionals defined-fun-res))
              (unless (or
@@ -1061,11 +1064,18 @@
                                (fun-info-ltn-annotate info)
                                (fun-info-ir2-convert info)
                                (fun-info-optimizer info))))
-               (substitute-leaf-if
-                (lambda (ref)
-                  (policy ref (> recognize-self-calls 0)))
-                res defined-fun-res))
-             res)
+               (if (block-compile *compilation*)
+                   (substitute-leaf res defined-fun-res)
+                   (substitute-leaf-if
+                    (lambda (ref)
+                      (policy ref (> recognize-self-calls 0)))
+                    res defined-fun-res)))
+             (if (and (functional-top-level-defun-p res)
+                      (block-compilation-non-entry-point name))
+                 ;; Insert an empty lambda to get flushed instead, so
+                 ;; we don't confuse locall with a stray ref.
+                 (ir1-convert-lambda '(lambda ()))
+                 res))
            (ir1-convert-lambda lambda-expression
                                :maybe-add-debug-catch t
                                :debug-name
@@ -1122,20 +1132,25 @@
          (body (if lambda-with-lexenv-p
                    `(lambda ,@(cddr fun))
                    fun))
+         (lexenv-lamba (lexenv-lambda *lexenv*))
          (*lexenv*
            (if lambda-with-lexenv-p
                (make-lexenv
                 :default (process-inline-lexenv (second fun))
                 :handled-conditions (lexenv-handled-conditions *lexenv*)
                 :policy policy
-                :flushable (lexenv-flushable *lexenv*))
+                :flushable (lexenv-flushable *lexenv*)
+                :lambda lexenv-lamba
+                :parent *lexenv*)
                (make-almost-null-lexenv
                 policy
                 ;; Inherit MUFFLE-CONDITIONS from the call-site lexenv
                 ;; rather than the definition-site lexenv, since it seems
                 ;; like a much more common case.
                 (lexenv-handled-conditions *lexenv*)
-                (lexenv-flushable *lexenv*))))
+                (lexenv-flushable *lexenv*)
+                lexenv-lamba
+                *lexenv*)))
          (clambda (ir1-convert-lambda body
                                       :source-name source-name
                                       :debug-name debug-name
@@ -1169,7 +1184,8 @@
 ;;; previous references.
 (defun get-defined-fun (name &optional (lambda-list nil lp))
   (proclaim-as-fun-name name)
-  (when (boundp '*ir1-namespace*)
+  (when #+sb-xc-host (not *compile-time-eval*)
+        #-sb-xc-host (boundp '*ir1-namespace*)
     (let ((found (find-free-fun name "shouldn't happen! (defined-fun)"))
           (free-funs (free-funs *ir1-namespace*)))
       (note-name-defined name :function)
@@ -1370,9 +1386,9 @@ is potentially harmful to any already-compiled callers using (SAFETY 0)."
 
     (become-defined-fun-name name)
 
-    ;; old CMU CL comment:
-    ;;   If there is a type from a previous definition, blast it,
-    ;;   since it is obsolete.
+    ;;
+    ;; If there is a type from a previous definition, blast it, since it is
+    ;; obsolete.
     (when (and defined-fun (neq :declared (leaf-where-from defined-fun)))
       (setf (leaf-type defined-fun)
             ;; FIXME: If this is a block compilation thing, shouldn't
@@ -1413,7 +1429,6 @@ is potentially harmful to any already-compiled callers using (SAFETY 0)."
 (defun optional-dispatch-entry-point-fun (dispatcher n)
   (declare (type optional-dispatch dispatcher)
            (type unsigned-byte n))
-  (let* ((env (getf (optional-dispatch-plist dispatcher) :ir1-environment))
-         (*lexenv* (first env))
-         (*current-path* (second env)))
+  (let ((*lexenv* (functional-lexenv dispatcher))
+        (*current-path* (optional-dispatch-source-path dispatcher)))
     (force (nth n (optional-dispatch-entry-points dispatcher)))))

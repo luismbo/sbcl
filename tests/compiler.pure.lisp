@@ -6456,3 +6456,23 @@
                 (type (eql -1) p2))
        (logandc1 p1 p2))
     ((-3 -1) 2)))
+
+;;; A user reported a potential compiler bug when SBCL consumed all its memory
+;;; while trying to compile a "trivial" wrapper macro similar to this one.
+;;; (because MACROLET is not FLET)
+(with-test (:name :macrolet-infinite-loop-detection)
+  (multiple-value-bind (fun warningsp errorp)
+      (compile nil
+               '(lambda (x)
+                  (macrolet ((complicated-fun (&rest keys)
+                               `(complicated-fun :a 1 ,@keys)))
+                    (complicated-fun :x 9))))
+    (assert (and fun warningsp errorp))))
+
+;;; This SAP+ call overflowed the size of an immediate on MIPS.
+;;; 'bit-vector.impure.lisp' exposed this bug where it computes
+;;;   (sb-sys:sap+ first sb-c:+backend-page-bytes+)
+;;; which is not the ideal place to fail, considering that
+;;; pointer arithmetic is not what's being tested.
+(with-test (:name :sap+-immediate)
+  (compile nil '(lambda (x) (sb-sys:sap+ x 65536))))

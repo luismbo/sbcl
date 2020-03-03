@@ -1059,11 +1059,7 @@
         ;; determining the direction of copying.
         (unless (= src-word dst-word)
           (give-up-ir1-transform))
-        ;; FIXME: The cross-compiler doesn't optimize TRUNCATE properly,
-        ;; so we have to do its work here.
-        `(let ((end (+ ,src-word ,(if (= n-elems-per-word 1)
-                                      'length
-                                      `(truncate (the index length) ,n-elems-per-word)))))
+        `(let ((end (+ ,src-word (truncate (the index length) ,n-elems-per-word))))
            (declare (type index end))
            ;; Handle any bits at the end.
            (when (logtest length (1- ,n-elems-per-word))
@@ -2245,9 +2241,12 @@
               (dolist (x (if reversedp (reverse map) map))
                 (let ((sym (car x)))
                   (unless (member sym seen)
-                    ;; NIL and T need wrapping in () since they should not signify
+                    ;; NIL, T, OTHERWISE need wrapping in () since they should not signify
                     ;; an empty list of keys or the "otherwise" case respectively.
-                    (push (list (if (member sym '(nil t)) (list sym) sym) (cdr x))
+                    (push (list (if (memq sym '(nil t otherwise))
+                                    (list sym)
+                                    sym)
+                                (cdr x))
                           clauses)
                     (push sym seen))))
               ;; CASE could decide not to use hash-based lookup, as there is a

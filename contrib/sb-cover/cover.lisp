@@ -15,6 +15,8 @@
            #:store-coverage-data))
 
 (in-package #:sb-cover)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (setf (sb-int:system-package-p *package*) t))
 
 (defmacro code-coverage-hashtable () `(car sb-c:*code-coverage-info*))
 
@@ -104,6 +106,7 @@ image."
 ;;; Ideally we could report directly from the new data where applicable,
 ;;; however this is, for the time being, perfectly backward-compatibile.
 (defun refresh-coverage-info (&optional filename)
+  (declare (ignorable filename))
   ;; NAMESTRING->PATH-TABLES maps a namestring to a hashtable which maps
   ;; source paths to the legacy coverage record for that path in that file,
   ;;   e.g. (1 4 1) -> ((1 4 1) . SB-C::%CODE-COVERAGE-UNMARKED%)
