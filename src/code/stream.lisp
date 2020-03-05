@@ -214,10 +214,11 @@
          (- res
             (- +ansi-stream-in-buffer-length+
                (ansi-stream-in-index stream)))
-         #+sb-unicode
-         (let ((char-size (if (fd-stream-p stream)
-                              (fd-stream-char-size stream)
-                              (external-format-char-size (stream-external-format stream)))))
+         #+sb-unicode  ; HACK: the CRLF hack here shouldn't be sb-unicode only
+         (let* ((ef (stream-external-format stream))
+                (char-size (if (fd-stream-p stream)
+                               (fd-stream-char-size stream)
+                               (external-format-char-size ef))))
            (- res
               (etypecase char-size
                 (function
@@ -228,7 +229,19 @@
                 (fixnum
                  (* char-size
                     (- +ansi-stream-in-buffer-length+
-                       (ansi-stream-in-index stream))))))))))))
+                       (ansi-stream-in-index stream)))))
+              ;; HACK: this assumes #\Newline always originated from a CRLF, but
+              ;; it could have come from an LF.
+              (if (and (listp ef) (eq (getf (rest ef) :newline-coding) :crlf))
+                  (let ((crlf-size (etypecase char-size
+                                     (function (funcall char-size #\Return))
+                                     (fixnum char-size))))
+                    (* crlf-size
+                       (loop with buffer = (ansi-stream-cin-buffer stream)
+                             with start = (ansi-stream-in-index stream)
+                             for i from start below +ansi-stream-in-buffer-length+
+                             count (eql #\Newline (aref buffer i)))))
+                  0))))))))
 
 (defun file-position (stream &optional position)
   (if (ansi-stream-p stream)
