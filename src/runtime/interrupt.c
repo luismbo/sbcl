@@ -1724,7 +1724,7 @@ void reset_thread_control_stack_guard_page(struct thread *th)
 }
 
 boolean
-handle_guard_page_triggered(os_context_t *context,os_vm_address_t addr)
+handle_guard_page_triggered(os_context_t *context, os_vm_address_t addr)
 {
     struct thread *th=arch_os_get_current_thread();
 
