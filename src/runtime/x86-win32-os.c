@@ -94,7 +94,7 @@ int arch_os_thread_init(struct thread *thread)
  * defunct.  Not called on live threads
  */
 
-int arch_os_thread_cleanup(struct thread *thread) {
+int arch_os_thread_cleanup(struct thread __attribute__((__unused__)) *thread) {
     return 0;
 }
 
@@ -159,7 +159,9 @@ os_context_float_register_addr(os_context_t *context, int offset)
 {
     return (os_context_register_t*)&context->win32_context->FloatSave.RegisterArea[offset];
 }
+
 void
-os_flush_icache(os_vm_address_t address, os_vm_size_t length)
+os_flush_icache(os_vm_address_t __attribute__((__unused__)) address,
+                os_vm_size_t __attribute__((__unused__)) length)
 {
 }

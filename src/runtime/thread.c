@@ -192,7 +192,7 @@ static int
 initial_thread_trampoline(struct thread *th)
 {
     lispobj function;
-#if defined(LISP_FEATURE_X86) || defined(LISP_FEATURE_X86_64)
+#if !defined(LISP_FEATURE_WIN32) && (defined(LISP_FEATURE_X86) || defined(LISP_FEATURE_X86_64))
     lispobj *args = NULL;
 #endif
 #ifdef LISP_FEATURE_SB_THREAD
