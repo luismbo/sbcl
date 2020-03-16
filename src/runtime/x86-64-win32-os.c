@@ -46,6 +46,11 @@ int arch_os_thread_init(struct thread *thread)
     void *cur_stack_end;
     MEMORY_BASIC_INFORMATION stack_memory;
 
+    ULONG stack_overflow_slack = 2*os_vm_page_size;
+    if (!SetThreadStackGuarantee(&stack_overflow_slack)) {
+        fprintf(stderr, "Could not SetThreadStackGuarantee: 0x%lx.\n", GetLastError());
+    }
+
     asm volatile ("mov %%gs:8,%0": "=r" (cur_stack_end));
 
     /* Can't pull stack start from fs:4 or fs:8 or whatever,

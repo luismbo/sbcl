@@ -1325,6 +1325,14 @@ signal_internal_error_or_lose(os_context_t *ctx,
 #if defined(LISP_FEATURE_SB_THREAD)
         thread_sigmask(SIG_SETMASK, &ctx->sigmask, NULL);
 #endif
+
+        /* XXX: this won't run when a restart is picked, which is pretty much
+         * the only way to recover from a stack overflow. We need to use the
+         * control stack return guard page instead. */
+        if (exception_record->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+            AVER(_resetstkoflw() > 0);
+        }
+
         /* FIXME: HANDLE-WIN32-EXCEPTION should be allowed to decline */
         return;
     }
@@ -1441,9 +1449,19 @@ handle_exception(EXCEPTION_RECORD *exception_record,
         rc = -1;
     }
 
-    if (rc)
+    if (rc) {
+#ifdef LISP_FEATURE_WIN32
+        if (code == EXCEPTION_STACK_OVERFLOW) {
+            //fprintf(stderr, "protecting control stack return guard page\n"); fflush(stderr);
+            //protect_control_stack_return_guard_page(1, self);
+            //fprintf(stderr, "protected control stack return guard page\n"); fflush(stderr);
+        }
+#endif
+
+
         /* All else failed, drop through to the lisp-side exception handler. */
         signal_internal_error_or_lose(ctx, exception_record, fault_address);
+    }
 
     if (self)
         self->carried_base_pointer = oldbp;

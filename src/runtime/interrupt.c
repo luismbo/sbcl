@@ -1773,6 +1773,11 @@ handle_guard_page_triggered(os_context_t *context,os_vm_address_t addr)
          * unprotect this one. This works even if we somehow missed
          * the return-guard-page, and hit it on our way to new
          * exhaustion instead. */
+
+        // debug
+        fprintf(stderr, "we're returning from the control stack return guard page\n");
+        fflush(stderr);
+
         if (th->control_stack_guard_page_protected != NIL)
             lose("control_stack_guard_page_protected not NIL");
         reset_thread_control_stack_guard_page(th);
