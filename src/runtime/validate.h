@@ -34,6 +34,7 @@
 #if !defined(__ASSEMBLER__)
 #include "thread.h"
 
+#ifndef LISP_FEATURE_WIN32
 #ifdef LISP_FEATURE_STACK_GROWS_DOWNWARD_NOT_UPWARD
 
 #define CONTROL_STACK_HARD_GUARD_PAGE(th) \
@@ -52,6 +53,7 @@
     (CONTROL_STACK_GUARD_PAGE(th) - os_vm_page_size)
 
 #endif
+#endif /* !LISP_FEATURE_WIN32 */
 
 #ifdef ALIEN_STACK_GROWS_DOWNWARD
 
@@ -87,12 +89,14 @@
 extern void allocate_lisp_dynamic_space(boolean);
 extern boolean allocate_hardwired_spaces(boolean);
 
+#ifndef LISP_FEATURE_WIN32
 extern void
 protect_control_stack_hard_guard_page(int protect_p, struct thread *thread);
 extern void
 protect_control_stack_guard_page(int protect_p, struct thread *thread);
 extern void
 protect_control_stack_return_guard_page(int protect_p, struct thread *thread);
+#endif
 extern void
 protect_binding_stack_hard_guard_page(int protect_p, struct thread *thread);
 extern void

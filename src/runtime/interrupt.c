@@ -1706,6 +1706,7 @@ undefined_alien_function(void)
 }
 #endif
 
+#ifndef LISP_FEATURE_WIN32
 void lower_thread_control_stack_guard_page(struct thread *th)
 {
     protect_control_stack_guard_page(0, th);
@@ -1722,12 +1723,14 @@ void reset_thread_control_stack_guard_page(struct thread *th)
     th->control_stack_guard_page_protected = T;
     fprintf(stderr, "INFO: Control stack guard page reprotected\n");
 }
+#endif
 
 boolean
 handle_guard_page_triggered(os_context_t *context, os_vm_address_t addr)
 {
     struct thread *th=arch_os_get_current_thread();
 
+#ifndef LISP_FEATURE_WIN32
     if(addr >= CONTROL_STACK_HARD_GUARD_PAGE(th) &&
        addr < CONTROL_STACK_HARD_GUARD_PAGE(th) + os_vm_page_size) {
         fake_foreign_function_call(context);
@@ -1783,8 +1786,10 @@ handle_guard_page_triggered(os_context_t *context, os_vm_address_t addr)
         reset_thread_control_stack_guard_page(th);
         return 1;
     }
-    else if(addr >= BINDING_STACK_HARD_GUARD_PAGE(th) &&
-            addr < BINDING_STACK_HARD_GUARD_PAGE(th) + os_vm_page_size) {
+    else
+#endif /* !LISP_FEATURE_WIN32 */
+    if(addr >= BINDING_STACK_HARD_GUARD_PAGE(th) &&
+       addr < BINDING_STACK_HARD_GUARD_PAGE(th) + os_vm_page_size) {
         lose("Binding stack exhausted");
     }
     else if(addr >= BINDING_STACK_GUARD_PAGE(th) &&

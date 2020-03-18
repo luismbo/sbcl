@@ -1847,6 +1847,7 @@ scrub_control_stack()
 void
 scrub_thread_control_stack(struct thread *th)
 {
+#ifndef LISP_FEATURE_WIN32
     os_vm_address_t guard_page_address = CONTROL_STACK_GUARD_PAGE(th);
     os_vm_address_t hard_guard_page_address = CONTROL_STACK_HARD_GUARD_PAGE(th);
 #ifdef LISP_FEATURE_C_STACK_IS_CONTROL_STACK
@@ -1889,6 +1890,7 @@ scrub_thread_control_stack(struct thread *th)
     } while (((uword_t)++sp) & (BYTES_ZERO_BEFORE_END - 1));
 #endif
 #endif /* LISP_FEATURE_C_STACK_IS_CONTROL_STACK */
+#endif /* !LISP_FEATURE_WIN32 */
 }
 
 #if !defined(LISP_FEATURE_X86) && !defined(LISP_FEATURE_X86_64)

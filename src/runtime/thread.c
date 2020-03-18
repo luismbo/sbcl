@@ -361,8 +361,10 @@ init_new_thread(struct thread *th,
     }
 
     th->os_thread=thread_self();
+#ifndef LISP_FEATURE_WIN32
     if (guardp)
         protect_control_stack_guard_page(1, NULL);
+#endif
     protect_binding_stack_guard_page(1, NULL);
     protect_alien_stack_guard_page(1, NULL);
     /* Since GC can only know about this thread from the all_threads
